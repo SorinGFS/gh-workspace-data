@@ -91,11 +91,13 @@ gh workspace-data publish
 
 The extension translates the workspace paths back to the correct project paths in each data repository and opens or updates separate pull requests. It never pushes directly to a default branch.
 
-After merging a pull request, refresh the workspace baseline with:
+After merging a pull request, you may immediately refresh the workspace baseline with:
 
 ```sh
 gh workspace-data load
 ```
+
+This refresh is recommended but optional. If you continue editing and publish again without loading, the extension starts a new PR cycle from the latest default branch and applies only the changes made after the previous publication. Conflicting default-branch changes still stop publication for reconciliation.
 
 ## Daily workflow
 
@@ -103,7 +105,7 @@ gh workspace-data load
 2. Add, edit, move, or delete files under `#/public` and `#/private`.
 3. Run `publish` to create or update pull requests for all changes.
 4. Review and merge the pull requests.
-5. Run `load` again.
+5. Optionally run `load` to refresh immediately, or continue editing and let the next `publish` begin a new cycle from the merged default branch.
 
 Deleting a loaded file or concern and then publishing intentionally deletes its corresponding data-repository content. If remote and workspace changes conflict, synchronization stops instead of choosing a version silently.
 

@@ -669,6 +669,43 @@ function mergeCommit(repositoryPath, args, visibility, operation) {
     fail(`${operation} failed while publishing #/${visibility}.`);
 }
 
+// Prepare the stable branch for either an active PR update or a clean post-merge publication cycle.
+function preparePublicationBranch(repositoryPath, options) {
+    const {
+        actor,
+        branchName,
+        defaultBranch,
+        defaultRevision,
+        patchRevision,
+        publicationBranch,
+        pullRequest,
+        visibility
+    } = options;
+
+    if (pullRequest && !publicationBranch) {
+        fail(`Open pull request ${pullRequest.url} has no recoverable publication branch.`);
+    }
+    if (pullRequest) {
+        git(repositoryPath, ['fetch', 'publication', `refs/heads/${branchName}:refs/remotes/publication/stable`]);
+        git(repositoryPath, ['checkout', '-B', branchName, 'refs/remotes/publication/stable']);
+    } else {
+        git(repositoryPath, ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
+    }
+
+    const identityArgs = ['-c', `user.name=${actor}`, '-c', `user.email=${actor}@users.noreply.github.com`];
+    if (pullRequest) {
+        const defaultIncluded = git(repositoryPath, ['merge-base', '--is-ancestor', defaultRevision, 'HEAD'], { acceptedStatuses: [0, 1] });
+        if (defaultIncluded.status !== 0) {
+            mergeCommit(repositoryPath, [...identityArgs, 'merge', '--no-edit', defaultRevision], visibility, 'merge');
+        }
+    }
+    mergeCommit(repositoryPath, [...identityArgs, 'cherry-pick', patchRevision], visibility, 'cherry-pick');
+
+    return {
+        forceLeaseRevision: !pullRequest && publicationBranch ? publicationBranch.revision : null
+    };
+}
+
 // Publish every changed concern for one visibility through its stable contribution branch and PR.
 function publishVisibility(state, visibility, projectIdentity, actor) {
     const repository = dataRepositories[visibility];
@@ -727,28 +764,20 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
         const publicationBranch = readPublicationBranch(pushRepository, branchName);
         let pullRequest = findOpenPullRequest(repository, actor, branchName);
 
-        if (pullRequest && !publicationBranch) {
-            fail(`Open pull request ${pullRequest.url} has no recoverable publication branch.`);
-        }
-        if (pullRequest) {
-            git(repositoryPath, ['fetch', 'publication', `refs/heads/${branchName}:refs/remotes/publication/stable`]);
-            git(repositoryPath, ['checkout', '-B', branchName, 'refs/remotes/publication/stable']);
-        } else {
-            git(repositoryPath, ['checkout', '-B', branchName, `origin/${metadata.default_branch}`]);
-        }
-
-        const identityArgs = ['-c', `user.name=${actor}`, '-c', `user.email=${actor}@users.noreply.github.com`];
-        if (pullRequest) {
-            const defaultIncluded = git(repositoryPath, ['merge-base', '--is-ancestor', defaultRevision, 'HEAD'], { acceptedStatuses: [0, 1] });
-            if (defaultIncluded.status !== 0) {
-                mergeCommit(repositoryPath, [...identityArgs, 'merge', '--no-edit', defaultRevision], visibility, 'merge');
-            }
-        }
-        mergeCommit(repositoryPath, [...identityArgs, 'cherry-pick', patchRevision], visibility, 'cherry-pick');
+        const branchPreparation = preparePublicationBranch(repositoryPath, {
+            actor,
+            branchName,
+            defaultBranch: metadata.default_branch,
+            defaultRevision,
+            patchRevision,
+            publicationBranch,
+            pullRequest,
+            visibility
+        });
 
         const pushArguments = ['push'];
-        if (!pullRequest && publicationBranch) {
-            pushArguments.push(`--force-with-lease=refs/heads/${branchName}:${publicationBranch.revision}`);
+        if (branchPreparation.forceLeaseRevision) {
+            pushArguments.push(`--force-with-lease=refs/heads/${branchName}:${branchPreparation.forceLeaseRevision}`);
         }
         pushArguments.push('publication', `HEAD:refs/heads/${branchName}`);
         git(repositoryPath, pushArguments);
@@ -934,4 +963,4 @@ function execute() {
     }
 }
 
-module.exports = { execute, ensureIgnorePolicy };
+module.exports = { execute, ensureIgnorePolicy, preparePublicationBranch };
