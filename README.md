@@ -1,12 +1,48 @@
 # gh-workspace-data
 
-A GitHub CLI extension that materializes project-associated files from conventional public and private data repositories into an active target workspace, then publishes workspace changes through pull requests.
+Keep useful project files outside the project repository without keeping them outside your working environment.
+
+Projects often accumulate material that belongs with the project but not in its source repository: private notes, research, experiments, optional test suites, benchmarks, extended documentation, fixtures, or contributor-maintained tools. `gh-workspace-data` stores that material in separate GitHub repositories and brings only the files for the current project into its workspace.
+
+The materialized files are ordinary files under `#/`. Editors, terminals, and project tools can use them normally, while Git and npm exclude the generated workspace namespace from the target project.
+
+## How it works
+
+The extension identifies the target project from its Git `origin`. For example:
+
+```text
+github.com/acme/widget
+```
+
+It then finds that project's content in two conventional data repositories:
+
+```text
+acme/public-data       collaborative project data
+alice/private-data    Alice's personal project data
+```
+
+Data is grouped by an open-ended **concern** such as `tests`, `notes`, or `benchmarks`:
+
+```text
+acme/public-data/tests/github.com/acme/widget/schema.json
+alice/private-data/notes/github.com/acme/widget/todo.md
+```
+
+Inside Alice's checkout of `widget`, those files appear as:
+
+```text
+#/public/tests/schema.json
+#/private/notes/todo.md
+```
+
+Visibility is explicit in the workspace, so public and private concerns never overlap. GitHub repository settings remain responsible for who can access each data repository.
 
 ## Requirements
 
 - GitHub CLI authenticated with `gh auth login`
 - Git
 - Node.js 20 or newer
+- A target project hosted on GitHub
 
 ## Install
 
@@ -14,88 +50,100 @@ A GitHub CLI extension that materializes project-associated files from conventio
 gh extension install SorinGFS/gh-workspace-data
 ```
 
-Run commands from any directory inside the target Git project:
+The extension is installed for the current user and becomes available in every target repository as:
+
+```sh
+gh workspace-data
+```
+
+## Get started
+
+From any directory inside a target project:
 
 ```sh
 gh workspace-data init
 gh workspace-data load
+```
+
+`init` reserves the generated `#/` namespace. If the project has `package.json`, it also adds:
+
+```sh
+npm run data:load
+npm run data:publish
+```
+
+`load` discovers and materializes every concern for the current project. A missing public or private data repository is skipped, so users may maintain either or both.
+
+Before publishing to a data repository, create it on GitHub with the intended visibility and at least one initial commit. The public repository normally belongs to the target project owner; the private repository normally belongs to the authenticated user.
+
+To create new data, add ordinary files beneath the appropriate visibility and concern:
+
+```text
+#/public/examples/example.json
+#/private/notes/design.md
+```
+
+Then publish all changes:
+
+```sh
 gh workspace-data publish
 ```
 
-Upgrade the installed extension with:
+The extension translates the workspace paths back to the correct project paths in each data repository and opens or updates separate pull requests. It never pushes directly to a default branch.
+
+After merging a pull request, refresh the workspace baseline with:
 
 ```sh
-gh extension upgrade workspace-data
+gh workspace-data load
 ```
 
-## Convention
+## Daily workflow
 
-For a target project with identity:
+1. Run `load` to obtain or refresh project data.
+2. Add, edit, move, or delete files under `#/public` and `#/private`.
+3. Run `publish` to create or update pull requests for all changes.
+4. Review and merge the pull requests.
+5. Run `load` again.
+
+Deleting a loaded file or concern and then publishing intentionally deletes its corresponding data-repository content. If remote and workspace changes conflict, synchronization stops instead of choosing a version silently.
+
+## Default repositories
+
+The defaults contain no hardcoded user identity:
 
 ```text
-github.com/owner/project
+public:  <target-project-owner>/public-data
+private: <authenticated-GitHub-user>/private-data
 ```
 
-the default data repositories are:
+For a contributor working on someone else's project, public changes are proposed to the project owner's data repository through a branch or fork, while private data remains associated with the contributor's own repository.
 
-```text
-public:  owner/public-data
-private: <authenticated-user>/private-data
-```
-
-Data repositories address project content as:
-
-```text
-<concern>/github.com/owner/project/<path>
-```
-
-The target workspace materializes it as:
-
-```text
-#/public/<concern>/<path>
-#/private/<concern>/<path>
-```
-
-`init` reserves root `/#/` in `.gitignore`. When `package.json` exists, it also adds generic `data:load` and `data:publish` scripts.
-
-`init`, `load`, and `publish` enforce the root-only Git exclusion. A missing `.gitignore` is created. An existing `.npmignore` receives the same exclusion, but an absent `.npmignore` remains absent so npm can continue using `.gitignore` rather than changing package-selection precedence. The leading slash keeps legitimate nested directories such as `folder/#/` trackable.
-
-## Missing repositories
-
-A missing public or private data repository does not prevent the other visibility from loading. The unavailable visibility remains an ordinary local directory and is recorded as unavailable.
-
-Safety behavior:
-
-- an unavailable repository with no local data is skipped;
-- local data for an unavailable repository is preserved;
-- publication is blocked when local data has no destination repository;
-- a previously available repository becoming inaccessible blocks synchronization rather than discarding its workspace data;
-- when a newly available repository and local workspace both contain project data without a common baseline, synchronization stops for explicit reconciliation.
-
-## Publication
-
-Publication processes all changed concerns for each visibility independently. It uses a stable contributor branch:
-
-```text
-<authenticated-user>-contrib/<project-identity>
-```
-
-An open PR receives additional commits. After a PR is merged, the next publication cycle starts from the current default branch and resets the workflow-owned branch with an exact `--force-with-lease` guard. Contributors without direct push access use their fork for the public PR.
+A missing repository does not prevent the other one from working. Local files targeting a missing repository are preserved, but publication is blocked until that repository exists and is accessible.
 
 ## Repository overrides
 
-Nonstandard data repository identities can be supplied without adding target-project metadata:
+Use environment variables when repository names do not follow the defaults:
 
 ```sh
 WORKSPACE_DATA_PUBLIC_REPOSITORY=organization/shared-data gh workspace-data load
 WORKSPACE_DATA_PRIVATE_REPOSITORY=user/personal-data gh workspace-data load
 ```
 
-Use the same overrides consistently for load and publish operations.
+Use the same overrides for subsequent load and publish operations.
 
-## Generated state
+## Workspace safety
 
-`#/.data-state.json` records exact source revisions, repository availability, and active pull-request state. The complete `#/` directory is generated and must remain excluded from the target repository.
+- `#/` is generated workspace state and is excluded from the target Git repository.
+- Existing `.npmignore` files also exclude `/#/`; an absent `.npmignore` is left absent so npm continues using `.gitignore`.
+- Materialized components use ordinary files and directories, never filesystem links.
+- Generated synchronization state tracks source revisions and open pull requests; do not edit it manually.
+- Losing synchronization state blocks publication rather than risking unintended remote deletion.
+
+## Upgrade
+
+```sh
+gh extension upgrade workspace-data
+```
 
 ## License
 
