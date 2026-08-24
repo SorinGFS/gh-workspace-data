@@ -814,13 +814,46 @@ Environment overrides:
   WORKSPACE_DATA_PRIVATE_REPOSITORY=owner/repository`);
 }
 
+// Add the root-only generated namespace exclusion while preserving existing ignore content.
+function ensureIgnoreExclusion(ignorePath, createWhenMissing) {
+    if (!fs.existsSync(ignorePath) && !createWhenMissing) {
+        return false;
+    }
+    if (fs.existsSync(ignorePath)) {
+        const stat = fs.lstatSync(ignorePath);
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+            fail(`Ignore policy is not an ordinary file: ${ignorePath}`);
+        }
+    }
+
+    const original = fs.existsSync(ignorePath) ? fs.readFileSync(ignorePath, 'utf8') : '';
+    const equivalentPatterns = new Set(['/#/', '/#', '\\#/', '\\#']);
+    if (original.split(/\r?\n/).some((line) => equivalentPatterns.has(line.trim()))) {
+        return false;
+    }
+
+    const newline = original.includes('\r\n') ? '\r\n' : '\n';
+    const separator = original
+        ? (original.endsWith('\n') ? newline : `${newline}${newline}`)
+        : '';
+    fs.writeFileSync(
+        ignorePath,
+        `${original}${separator}# Materialized workspace data is generated state.${newline}/#/${newline}`
+    );
+    return true;
+}
+
+// Enforce Git exclusion and augment npm exclusion only when the project already uses it.
+function ensureIgnorePolicy(root = projectRoot) {
+    const gitignorePath = path.join(root, '.gitignore');
+    const npmignorePath = path.join(root, '.npmignore');
+    ensureIgnoreExclusion(gitignorePath, true);
+    ensureIgnoreExclusion(npmignorePath, false);
+}
+
 // Prepare one target repository without embedding user, concern, or source-path metadata.
 function initializeProject() {
-    const gitignorePath = path.join(projectRoot, '.gitignore');
     const packagePath = path.join(projectRoot, 'package.json');
-    const originalGitignore = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, 'utf8') : '';
-    const ignoreLines = originalGitignore.split(/\r?\n/);
-    const hasIgnore = ignoreLines.some((line) => line.trim() === '/#/');
     let packageOutput = null;
 
     if (fs.existsSync(packagePath)) {
@@ -848,12 +881,7 @@ function initializeProject() {
         packageOutput = `${JSON.stringify(packageJson, null, indent).replace(/\n/g, newline)}${newline}`;
     }
 
-    if (!hasIgnore) {
-        const separator = originalGitignore
-            ? (originalGitignore.endsWith('\n') ? '\n' : '\n\n')
-            : '';
-        fs.writeFileSync(gitignorePath, `${originalGitignore}${separator}# Materialized workspace data is generated state.\n/#/\n`);
-    }
+    ensureIgnorePolicy();
     if (packageOutput !== null) {
         fs.writeFileSync(packagePath, packageOutput);
     }
@@ -886,17 +914,24 @@ function main() {
 
     if (command === 'init') {
         initializeProject();
-    } else if (command === 'load') {
-        loadAll(projectIdentity, actor);
     } else {
-        publishAll(projectIdentity, actor);
+        ensureIgnorePolicy();
+        if (command === 'load') {
+            loadAll(projectIdentity, actor);
+        } else {
+            publishAll(projectIdentity, actor);
+        }
     }
 }
 
 // Convert operational failures into a concise nonzero command result.
-try {
-    main();
-} catch (error) {
-    console.error(`workspace-data: ${error.message}`);
-    process.exitCode = 1;
+function execute() {
+    try {
+        main();
+    } catch (error) {
+        console.error(`workspace-data: ${error.message}`);
+        process.exitCode = 1;
+    }
 }
+
+module.exports = { execute, ensureIgnorePolicy };

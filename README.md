@@ -56,7 +56,9 @@ The target workspace materializes it as:
 #/private/<concern>/<path>
 ```
 
-`init` reserves `/#/` in `.gitignore`. When `package.json` exists, it also adds generic `data:load` and `data:publish` scripts.
+`init` reserves root `/#/` in `.gitignore`. When `package.json` exists, it also adds generic `data:load` and `data:publish` scripts.
+
+`init`, `load`, and `publish` enforce the root-only Git exclusion. A missing `.gitignore` is created. An existing `.npmignore` receives the same exclusion, but an absent `.npmignore` remains absent so npm can continue using `.gitignore` rather than changing package-selection precedence. The leading slash keeps legitimate nested directories such as `folder/#/` trackable.
 
 ## Missing repositories
 
