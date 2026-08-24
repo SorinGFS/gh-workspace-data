@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// Expose the workspace-data implementation through GitHub CLI's extension entry point.
+'use strict';
+
+require('./src/index.js');
