@@ -1,6 +1,6 @@
 {
   "name": "gh-workspace-data",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Materialize and publish project-associated workspace data through GitHub CLI",
   "private": true,
   "scripts": {
