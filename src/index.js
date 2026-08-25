@@ -834,7 +834,7 @@ function printHelp() {
     console.log(`Usage: gh workspace-data <command>
 
 Commands:
-  init       Reserve # and add generic package commands when package.json exists
+  init       Reserve the generated # workspace namespace
   load       Load or reconcile all matched public and private concerns
   publish    Publish all workspace changes through contribution branches and PRs
 
@@ -880,42 +880,10 @@ function ensureIgnorePolicy(root = projectRoot) {
     ensureIgnoreExclusion(npmignorePath, false);
 }
 
-// Prepare one target repository without embedding user, concern, or source-path metadata.
+// Reserve the generated namespace without modifying the canonical project's command surface.
 function initializeProject() {
-    const packagePath = path.join(projectRoot, 'package.json');
-    let packageOutput = null;
-
-    if (fs.existsSync(packagePath)) {
-        const originalPackage = fs.readFileSync(packagePath, 'utf8');
-        const packageJson = JSON.parse(originalPackage);
-        packageJson.scripts = packageJson.scripts || {};
-        const commands = {
-            'data:load': 'gh workspace-data load',
-            'data:publish': 'gh workspace-data publish'
-        };
-
-        // Preserve unrelated scripts and reject ownership conflicts outside the known local prototype.
-        for (const [name, command] of Object.entries(commands)) {
-            const existing = packageJson.scripts[name];
-            const legacy = name === 'data:load' ? 'node scripts/data load' : 'node scripts/data publish';
-            if (existing && existing !== command && existing !== legacy) {
-                fail(`package.json script ${name} is already owned by: ${existing}`);
-            }
-            packageJson.scripts[name] = command;
-        }
-
-        const indentMatch = originalPackage.match(/\n([ \t]+)"/);
-        const indent = indentMatch ? indentMatch[1] : '  ';
-        const newline = originalPackage.includes('\r\n') ? '\r\n' : '\n';
-        packageOutput = `${JSON.stringify(packageJson, null, indent).replace(/\n/g, newline)}${newline}`;
-    }
-
     ensureIgnorePolicy();
-    if (packageOutput !== null) {
-        fs.writeFileSync(packagePath, packageOutput);
-    }
-
-    console.log(`Initialized workspace data commands for ${deriveProjectIdentity()}.`);
+    console.log(`Initialized workspace data for ${deriveProjectIdentity()}.`);
     console.log(`Public source:  ${dataRepositories.public}`);
     console.log(`Private source: ${dataRepositories.private}`);
 }

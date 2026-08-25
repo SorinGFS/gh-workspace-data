@@ -31,10 +31,13 @@ test('rejects an unknown command', () => {
   assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish>/);
 });
 
-// Create the mandatory Git exclusion without introducing an npm policy file.
+// Reserve only the generated namespace without changing the target project's command surface.
 test('creates only a missing .gitignore and remains idempotent', (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-ignore-'));
+  const packagePath = path.join(root, 'package.json');
+  const packageContent = '{\n  "scripts": {\n    "test": "node --test"\n  }\n}\n';
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(packagePath, packageContent);
 
   ensureIgnorePolicy(root);
   ensureIgnorePolicy(root);
@@ -42,6 +45,7 @@ test('creates only a missing .gitignore and remains idempotent', (context) => {
   const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
   assert.equal(gitignore.split(/\r?\n/).filter((line) => line === '/#/').length, 1);
   assert.equal(fs.existsSync(path.join(root, '.npmignore')), false);
+  assert.equal(fs.readFileSync(packagePath, 'utf8'), packageContent);
 });
 
 // Extend an existing npm policy without replacing its rules or newline convention.

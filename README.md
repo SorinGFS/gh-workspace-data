@@ -65,12 +65,7 @@ gh workspace-data init
 gh workspace-data load
 ```
 
-`init` reserves the generated `#/` namespace. If the project has `package.json`, it also adds:
-
-```sh
-npm run data:load
-npm run data:publish
-```
+`init` reserves the generated `#/` namespace by enforcing its ignore policy. It does not add project-local command adapters; use the extension commands directly.
 
 `load` discovers and materializes every concern for the current project. A missing public or private data repository is skipped, so users may maintain either or both.
 
