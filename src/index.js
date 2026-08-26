@@ -484,12 +484,16 @@ function verifyNamespaceShape(hasState) {
 }
 
 // Replace selected visibility snapshots and state with rollback for local filesystem failures.
-function replaceWorkspace(stagedRoot, state, visibilities) {
-    fs.mkdirSync(namespaceRoot, { recursive: true });
+function replaceWorkspace(stagedRoot, state, visibilities, options = {}) {
+    const activeNamespaceRoot = options.namespaceRoot || namespaceRoot;
+    const activeStatePath = options.statePath || statePath;
+    const renameSync = options.renameSync || fs.renameSync;
+    fs.mkdirSync(activeNamespaceRoot, { recursive: true });
     const operationId = `${process.pid}-${crypto.randomUUID()}`;
-    const incomingRoot = path.join(namespaceRoot, `.incoming-${operationId}`);
+    const incomingRoot = path.join(activeNamespaceRoot, `.incoming-${operationId}`);
     const backups = new Map();
-    const previousState = fs.existsSync(statePath) ? fs.readFileSync(statePath) : null;
+    const installed = new Set();
+    const previousState = fs.existsSync(activeStatePath) ? fs.readFileSync(activeStatePath) : null;
 
     fs.cpSync(stagedRoot, incomingRoot, { recursive: true, errorOnExist: true });
     inventoryOrdinaryFiles(incomingRoot);
@@ -497,39 +501,42 @@ function replaceWorkspace(stagedRoot, state, visibilities) {
     try {
         // Preserve current visibility snapshots until all incoming directories are ready.
         for (const visibility of visibilities) {
-            const current = path.join(namespaceRoot, visibility);
-            const backup = path.join(namespaceRoot, `.backup-${operationId}-${visibility}`);
+            const current = path.join(activeNamespaceRoot, visibility);
+            const backup = path.join(activeNamespaceRoot, `.backup-${operationId}-${visibility}`);
             if (fs.existsSync(current)) {
-                fs.renameSync(current, backup);
+                renameSync(current, backup);
                 backups.set(visibility, backup);
             }
             const incoming = path.join(incomingRoot, visibility);
             if (!fs.existsSync(incoming)) {
                 fs.mkdirSync(incoming, { recursive: true });
             }
-            fs.renameSync(incoming, current);
+            renameSync(incoming, current);
+            installed.add(visibility);
         }
 
-        fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+        fs.writeFileSync(activeStatePath, `${JSON.stringify(state, null, 2)}\n`);
 
         // Discard backups only after materialized data and synchronization state both succeed.
         for (const backup of backups.values()) {
             fs.rmSync(backup, { recursive: true, force: true });
         }
     } catch (error) {
-        // Restore every previous visibility snapshot and state after a local commit failure.
-        for (const visibility of visibilities) {
-            const current = path.join(namespaceRoot, visibility);
-            fs.rmSync(current, { recursive: true, force: true });
+        // Reverse only completed replacement steps so an untouched snapshot is never deleted.
+        for (const visibility of [...visibilities].reverse()) {
+            const current = path.join(activeNamespaceRoot, visibility);
+            if (installed.has(visibility)) {
+                fs.rmSync(current, { recursive: true, force: true });
+            }
             const backup = backups.get(visibility);
             if (backup && fs.existsSync(backup)) {
-                fs.renameSync(backup, current);
+                renameSync(backup, current);
             }
         }
         if (previousState) {
-            fs.writeFileSync(statePath, previousState);
+            fs.writeFileSync(activeStatePath, previousState);
         } else {
-            fs.rmSync(statePath, { force: true });
+            fs.rmSync(activeStatePath, { force: true });
         }
         throw error;
     } finally {
@@ -931,4 +938,4 @@ function execute() {
     }
 }
 
-module.exports = { execute, ensureIgnorePolicy, preparePublicationBranch };
+module.exports = { execute, ensureIgnorePolicy, preparePublicationBranch, replaceWorkspace };
