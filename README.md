@@ -44,6 +44,12 @@ Visibility is explicit in the workspace, so public and private concerns never ov
 - Node.js 20 or newer
 - A target project hosted on GitHub
 
+## Compatibility
+
+Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The test matrix exercises the CLI entry point, workspace replacement and rollback, ignore-policy handling, and isolated Git publication history.
+
+Authenticated GitHub API behavior remains provided by the installed GitHub CLI.
+
 ## Install
 
 ```sh
