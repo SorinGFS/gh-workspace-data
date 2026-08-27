@@ -20,6 +20,7 @@ test('prints help outside a Git repository', () => {
   assert.match(result.stdout, /init/);
   assert.match(result.stdout, /load/);
   assert.match(result.stdout, /publish/);
+  assert.match(result.stdout, /--merge-owned/);
   assert.match(result.stdout, /WORKSPACE_DATA_PUBLIC_REPOSITORY/);
 });
 
@@ -28,7 +29,29 @@ test('rejects an unknown command', () => {
   const result = spawnSync(process.execPath, [executable, 'unknown'], { encoding: 'utf8' });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish>/);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish \[--merge-owned\]>/);
+});
+
+// Accept the owned-merge option only on publish before establishing a target project.
+test('accepts --merge-owned as a publish option', (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-option-'));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const result = spawnSync(process.execPath, [executable, 'publish', '--merge-owned'], {
+    cwd: root,
+    encoding: 'utf8'
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /not a git repository/);
+  assert.doesNotMatch(result.stderr, /Usage:/);
+});
+
+// Reject the owned-merge option on commands that do not publish remote changes.
+test('rejects --merge-owned on load', () => {
+  const result = spawnSync(process.execPath, [executable, 'load', '--merge-owned'], { encoding: 'utf8' });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish \[--merge-owned\]>/);
 });
 
 // Reserve only the generated namespace without changing the target project's command surface.

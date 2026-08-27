@@ -92,7 +92,17 @@ gh workspace-data publish
 
 The extension translates the workspace paths back to the correct project paths in each data repository and opens or updates separate pull requests. It never pushes directly to a default branch.
 
-After merging a pull request, you may immediately refresh the workspace baseline with:
+For repositories owned by the authenticated GitHub user, publishing can also merge the resulting pull requests and reload successfully merged data in one command:
+
+```sh
+gh workspace-data publish --merge-owned
+```
+
+This option remains review-first for organization-owned repositories, repositories owned by another user, and fork-based contributions. Before merging, it verifies that the pull request is still open and that its repository, branches, and head commit match the publication produced by the current invocation. It uses an ordinary squash merge without administrator bypass, and a successful merge closes the pull request automatically.
+
+If checks, branch protection, a merge queue, or another GitHub condition prevents an immediate merge, the pull request remains available and its reload is deferred. Run `gh workspace-data load` after the merge completes. Successfully merged data is reloaded even when another publication remains deferred or open for review.
+
+After merging a pull request manually, you may immediately refresh the workspace baseline with:
 
 ```sh
 gh workspace-data load
@@ -105,8 +115,8 @@ This refresh is recommended but optional. If you continue editing and publish ag
 1. Run `load` to obtain or refresh project data.
 2. Add, edit, move, or delete files under `#/public` and `#/private`.
 3. Run `publish` to create or update pull requests for all changes.
-4. Review and merge the pull requests.
-5. Optionally run `load` to refresh immediately, or continue editing and let the next `publish` begin a new cycle from the merged default branch.
+4. Review and merge the pull requests, or use `publish --merge-owned` for authenticated-user-owned repositories.
+5. Optionally run `load` after manual or deferred merges, or continue editing and let the next `publish` begin a new cycle from the merged default branch.
 
 Deleting a loaded file or concern and then publishing intentionally deletes its corresponding data-repository content. If remote and workspace changes conflict, synchronization stops instead of choosing a version silently.
 

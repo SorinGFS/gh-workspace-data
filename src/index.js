@@ -657,6 +657,70 @@ function findOpenPullRequest(repository, actor, branchName) {
         && pullRequest.headRepositoryOwner.login.toLowerCase() === actor.toLowerCase()) || null;
 }
 
+// Merge only invocation-verified pull requests whose destination repository belongs to the actor.
+function mergeOwnedPublications(publications, actor, operations = {}) {
+    const readPullRequest = operations.readPullRequest
+        || ((publication) => ghApi(`repos/${publication.repository}/pulls/${publication.pullRequest.number}`));
+    const mergePullRequest = operations.mergePullRequest || ((publication) => run('gh', [
+        'pr', 'merge', String(publication.pullRequest.number), '--repo', publication.repository,
+        '--squash', '--delete-branch', '--match-head-commit', publication.headRevision
+    ], { acceptedStatuses: [0, 1] }));
+    const summary = { merged: [], deferred: [], review: [] };
+
+    // Keep fork-based and third-party destinations on the ordinary review path.
+    for (const publication of publications) {
+        const owned = publication.repositoryOwner.toLowerCase() === actor.toLowerCase()
+            && publication.pushRepository.toLowerCase() === publication.repository.toLowerCase();
+        if (!owned) {
+            summary.review.push(publication.pullRequest.url);
+            console.log(`Left ${publication.pullRequest.url} open for review because ${publication.repository} is not owned by ${actor}.`);
+            continue;
+        }
+
+        // Re-read the PR immediately before merging and bind the operation to the published head.
+        const pullRequest = readPullRequest(publication);
+        const expectedHeadRepository = publication.pushRepository.toLowerCase();
+        if (pullRequest.state !== 'open'
+            || pullRequest.number !== publication.pullRequest.number
+            || !pullRequest.head
+            || !pullRequest.head.repo
+            || pullRequest.head.repo.full_name.toLowerCase() !== expectedHeadRepository
+            || pullRequest.head.ref !== publication.pullRequest.headBranch
+            || pullRequest.head.sha !== publication.headRevision
+            || !pullRequest.base
+            || pullRequest.base.ref !== publication.pullRequest.baseBranch) {
+            fail(`Pull request ${publication.pullRequest.url} changed after publication; refusing to merge it automatically.`);
+        }
+
+        const mergeResult = mergePullRequest(publication);
+        const mergedPullRequest = readPullRequest(publication);
+        if (mergedPullRequest.merged_at) {
+            summary.merged.push(publication.pullRequest.url);
+            console.log(`Merged owned workspace-data pull request: ${publication.pullRequest.url}`);
+            continue;
+        }
+
+        const detail = (mergeResult.stderr || mergeResult.stdout || '').trim();
+        summary.deferred.push({ url: publication.pullRequest.url, detail });
+        console.log(`Left ${publication.pullRequest.url} open because GitHub did not merge it immediately.`);
+    }
+    return summary;
+}
+
+// Reload every merged destination before reporting any publication whose immediate merge was deferred.
+function completeOwnedPublicationCycle(publications, actor, reload, operations = {}) {
+    const mergePublications = operations.mergePublications || mergeOwnedPublications;
+    const summary = mergePublications(publications, actor);
+    if (summary.merged.length > 0) {
+        reload();
+    }
+    if (summary.deferred.length > 0) {
+        const details = summary.deferred.map(({ url, detail }) => `- ${url}${detail ? `: ${detail}` : ''}`).join('\n');
+        fail(`Automatic merge did not complete; reload is deferred for:\n${details}`);
+    }
+    return summary;
+}
+
 // Merge one commit into a publication target and report version-control conflicts without choosing a winner.
 function mergeCommit(repositoryPath, args, visibility, operation) {
     const result = git(repositoryPath, args, { acceptedStatuses: [0, 1] });
@@ -733,6 +797,9 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
             return;
         }
 
+        if (!metadata.owner || typeof metadata.owner.login !== 'string') {
+            fail(`Repository ${repository} has no verifiable owner identity.`);
+        }
         const repositoryPath = cloneRepository(repository, path.join(temporaryRoot, 'repository'));
         const defaultRevision = git(repositoryPath, ['rev-parse', `origin/${metadata.default_branch}`]).stdout.trim();
         if (repositoryState.availability === 'missing') {
@@ -820,19 +887,40 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
         };
         replaceWorkspace(stagedRoot, state, [visibility]);
         console.log(`Published ${visibility} changes for review: ${pullRequest.url}`);
+        return {
+            visibility,
+            repository,
+            repositoryOwner: metadata.owner.login,
+            pushRepository,
+            headRevision,
+            pullRequest: state.repositories[visibility].pullRequest
+        };
     } finally {
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
     }
 }
 
-// Publish all changed public and private concerns without direct default-branch pushes.
-function publishAll(projectIdentity, actor) {
+// Publish all changed concerns and optionally merge actor-owned PRs before refreshing the workspace.
+function publishAll(projectIdentity, actor, options = {}) {
     const state = readState(projectIdentity, true);
     verifyNamespaceShape(true);
+    const publications = [];
 
     // Keep visibility histories, branches, commits, and pull requests strictly separate.
     for (const visibility of Object.keys(dataRepositories)) {
-        publishVisibility(state, visibility, projectIdentity, actor);
+        const publication = publishVisibility(state, visibility, projectIdentity, actor);
+        if (publication) {
+            publications.push(publication);
+        }
+    }
+
+    // Preserve review-first publication unless the caller explicitly selects owned-repository merging.
+    if (options.mergeOwned) {
+        completeOwnedPublicationCycle(
+            publications,
+            actor,
+            () => loadAll(projectIdentity, actor)
+        );
     }
 }
 
@@ -841,9 +929,10 @@ function printHelp() {
     console.log(`Usage: gh workspace-data <command>
 
 Commands:
-  init       Reserve the generated # workspace namespace
-  load       Load or reconcile all matched public and private concerns
-  publish    Publish all workspace changes through contribution branches and PRs
+  init                    Reserve the generated # workspace namespace
+  load                    Load or reconcile all matched public and private concerns
+  publish                 Publish all workspace changes through contribution branches and PRs
+  publish --merge-owned   Merge actor-owned PRs and reload after successful immediate merges
 
 Environment overrides:
   WORKSPACE_DATA_PUBLIC_REPOSITORY=owner/repository
@@ -902,8 +991,12 @@ function main() {
         printHelp();
         return;
     }
-    if (!['init', 'load', 'publish'].includes(command) || extraArguments.length > 0) {
-        fail('Usage: gh workspace-data <init|load|publish>');
+    const mergeOwned = command === 'publish'
+        && extraArguments.length === 1
+        && extraArguments[0] === '--merge-owned';
+    if (!['init', 'load', 'publish'].includes(command)
+        || (extraArguments.length > 0 && !mergeOwned)) {
+        fail('Usage: gh workspace-data <init|load|publish [--merge-owned]>');
     }
 
     projectRoot = establishProjectRoot();
@@ -923,7 +1016,7 @@ function main() {
         if (command === 'load') {
             loadAll(projectIdentity, actor);
         } else {
-            publishAll(projectIdentity, actor);
+            publishAll(projectIdentity, actor, { mergeOwned });
         }
     }
 }
@@ -938,4 +1031,11 @@ function execute() {
     }
 }
 
-module.exports = { execute, ensureIgnorePolicy, preparePublicationBranch, replaceWorkspace };
+module.exports = {
+    completeOwnedPublicationCycle,
+    execute,
+    ensureIgnorePolicy,
+    mergeOwnedPublications,
+    preparePublicationBranch,
+    replaceWorkspace
+};

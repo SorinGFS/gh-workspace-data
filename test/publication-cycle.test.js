@@ -7,7 +7,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { preparePublicationBranch } = require('../src/index.js');
+const {
+    completeOwnedPublicationCycle,
+    mergeOwnedPublications,
+    preparePublicationBranch
+} = require('../src/index.js');
 
 // Execute Git in one isolated repository and expose unexpected command failures.
 function git(repository, args, acceptedStatuses = [0]) {
@@ -36,6 +40,107 @@ function commit(repository, message) {
     git(repository, ['commit', '-m', message]);
     return git(repository, ['rev-parse', 'HEAD']).stdout.trim();
 }
+
+// Build one stable publication record for automatic-merge qualification tests.
+function createPublication(overrides = {}) {
+    return {
+        repository: 'alice/public-data',
+        repositoryOwner: 'alice',
+        pushRepository: 'alice/public-data',
+        headRevision: 'a'.repeat(40),
+        pullRequest: {
+            number: 12,
+            url: 'https://github.com/alice/public-data/pull/12',
+            headBranch: 'alice-contrib/github.com/alice/widget',
+            baseBranch: 'main'
+        },
+        ...overrides
+    };
+}
+
+// Reproduce the live PR shape checked immediately before and after an automatic merge.
+function createPullRequest(publication, overrides = {}) {
+    return {
+        number: publication.pullRequest.number,
+        state: 'open',
+        merged_at: null,
+        head: {
+            repo: { full_name: publication.pushRepository },
+            ref: publication.pullRequest.headBranch,
+            sha: publication.headRevision
+        },
+        base: { ref: publication.pullRequest.baseBranch },
+        ...overrides
+    };
+}
+
+// Merge an actor-owned direct publication only when its live head still matches this invocation.
+test('merges an invocation-verified pull request in an actor-owned repository', () => {
+    const publication = createPublication();
+    let reads = 0;
+    let mergedPublication;
+    const summary = mergeOwnedPublications([publication], 'alice', {
+        readPullRequest: () => createPullRequest(publication, reads++ === 0 ? {} : { state: 'closed', merged_at: '2026-01-01T00:00:00Z' }),
+        mergePullRequest: (candidate) => {
+            mergedPublication = candidate;
+            return { status: 0, stdout: '', stderr: '' };
+        }
+    });
+
+    assert.equal(mergedPublication, publication);
+    assert.deepEqual(summary.merged, [publication.pullRequest.url]);
+    assert.deepEqual(summary.deferred, []);
+    assert.deepEqual(summary.review, []);
+});
+
+// Preserve review for repositories not owned directly by the authenticated actor.
+test('leaves non-owned publication pull requests open for review', () => {
+    const publication = createPublication({ repositoryOwner: 'acme' });
+    const summary = mergeOwnedPublications([publication], 'alice', {
+        readPullRequest: () => assert.fail('non-owned PR must not be read for automatic merge'),
+        mergePullRequest: () => assert.fail('non-owned PR must not be merged')
+    });
+
+    assert.deepEqual(summary.merged, []);
+    assert.deepEqual(summary.deferred, []);
+    assert.deepEqual(summary.review, [publication.pullRequest.url]);
+});
+
+// Reject a PR changed after publication rather than merging an unverified head revision.
+test('rejects an owned pull request whose live head changed', () => {
+    const publication = createPublication();
+
+    assert.throws(() => mergeOwnedPublications([publication], 'alice', {
+        readPullRequest: () => createPullRequest(publication, { head: { repo: { full_name: publication.pushRepository }, ref: publication.pullRequest.headBranch, sha: 'b'.repeat(40) } }),
+        mergePullRequest: () => assert.fail('changed PR must not be merged')
+    }), /changed after publication/);
+});
+
+// Report a protected or queued PR as deferred when GitHub does not merge it immediately.
+test('defers reload when GitHub leaves an owned pull request open', () => {
+    const publication = createPublication();
+    const summary = mergeOwnedPublications([publication], 'alice', {
+        readPullRequest: () => createPullRequest(publication),
+        mergePullRequest: () => ({ status: 1, stdout: '', stderr: 'required checks are pending' })
+    });
+
+    assert.deepEqual(summary.merged, []);
+    assert.deepEqual(summary.deferred, [{ url: publication.pullRequest.url, detail: 'required checks are pending' }]);
+    assert.deepEqual(summary.review, []);
+});
+
+// Reload successful merges before surfacing another owned publication that remains deferred.
+test('reloads completed owned merges before reporting deferred pull requests', () => {
+    let reloads = 0;
+    const deferred = [{ url: 'https://github.com/alice/private-data/pull/4', detail: 'required checks are pending' }];
+
+    assert.throws(() => completeOwnedPublicationCycle([], 'alice', () => {
+        reloads += 1;
+    }, {
+        mergePublications: () => ({ merged: ['https://github.com/alice/public-data/pull/3'], deferred, review: [] })
+    }), /reload is deferred/);
+    assert.equal(reloads, 1);
+});
 
 // Preserve edits made after a squash merge even when no load occurs before the next publish.
 test('starts a clean publication cycle after merge without an intervening load', (context) => {
