@@ -152,6 +152,19 @@ Use the same overrides for subsequent load and publish operations.
 - Generated synchronization state tracks source revisions and open pull requests; do not edit it manually.
 - Losing synchronization state blocks publication rather than risking unintended remote deletion.
 
+## Tests
+
+The repository includes 14 isolated tests covering CLI routing, ignore-policy handling, owned-PR merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
+
+Run the complete suite and syntax validation from the repository:
+
+```sh
+npm test
+npm run check
+```
+
+GitHub Actions runs both commands on Node.js 20, 22, and 24 across Ubuntu, Windows, and macOS. Authenticated GitHub API behavior remains supplied by the installed GitHub CLI rather than exercised against live data repositories during the isolated test suite.
+
 ## Upgrade
 
 ```sh
