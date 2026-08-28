@@ -5,8 +5,41 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { replaceWorkspace } = require('../src/index.js');
+const { establishProjectRoot, replaceWorkspace } = require('../src/index.js');
+
+// Release the invocation directory before replacing the visibility that contains it.
+test('replaces a visibility when invoked from inside that visibility', (context) => {
+    const originalCwd = process.cwd();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-nested-invocation-'));
+    const namespaceRoot = path.join(root, '#');
+    const current = path.join(namespaceRoot, 'private');
+    const nestedInvocation = path.join(current, 'scripts');
+    const stagedRoot = path.join(root, 'staged');
+    const statePath = path.join(namespaceRoot, '.data-state.json');
+    context.after(() => {
+        process.chdir(originalCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    assert.equal(spawnSync('git', ['-C', root, 'init', '-b', 'main']).status, 0);
+    fs.mkdirSync(nestedInvocation, { recursive: true });
+    fs.mkdirSync(path.join(stagedRoot, 'private'), { recursive: true });
+    fs.writeFileSync(path.join(current, 'data.txt'), 'original\n');
+    fs.writeFileSync(path.join(stagedRoot, 'private', 'data.txt'), 'replacement\n');
+    fs.writeFileSync(statePath, '{"version":1}\n');
+    process.chdir(nestedInvocation);
+
+    const establishedRoot = establishProjectRoot();
+    assert.equal(fs.realpathSync.native(establishedRoot), fs.realpathSync.native(root));
+    assert.equal(fs.realpathSync.native(process.cwd()), fs.realpathSync.native(root));
+    replaceWorkspace(stagedRoot, { version: 2 }, ['private'], { namespaceRoot, statePath });
+
+    assert.equal(fs.readFileSync(path.join(current, 'data.txt'), 'utf8'), 'replacement\n');
+    assert.equal(fs.readFileSync(statePath, 'utf8'), '{\n  "version": 2\n}\n');
+    assert.deepEqual(fs.readdirSync(namespaceRoot).sort(), ['.data-state.json', 'private']);
+});
 
 // Preserve the original visibility when Windows rejects the initial backup rename.
 test('keeps the current snapshot when its backup rename fails', (context) => {

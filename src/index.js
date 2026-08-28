@@ -49,13 +49,15 @@ function git(repositoryPath, args, options = {}) {
     return run('git', ['-C', repositoryPath, ...args], options);
 }
 
-// Establish the canonical project root independently of the installed extension location.
+// Establish and enter the canonical project root before rotating generated workspace directories.
 function establishProjectRoot() {
     const root = git(process.cwd(), ['rev-parse', '--show-toplevel']).stdout.trim();
     if (!root) {
         fail('The current directory is not inside a canonical Git project.');
     }
-    return path.resolve(root);
+    const resolvedRoot = path.resolve(root);
+    process.chdir(resolvedRoot);
+    return resolvedRoot;
 }
 
 // Retrieve authenticated GitHub state and optionally classify a missing resource.
@@ -1033,6 +1035,7 @@ function execute() {
 
 module.exports = {
     completeOwnedPublicationCycle,
+    establishProjectRoot,
     execute,
     ensureIgnorePolicy,
     mergeOwnedPublications,
