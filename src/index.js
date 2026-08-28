@@ -256,6 +256,26 @@ function inventoryOrdinaryFiles(root, current = root, files = []) {
     return files.sort();
 }
 
+// Compare validated ordinary directory trees so unchanged snapshots retain their stable workspace roots.
+function ordinaryTreesEqual(leftRoot, rightRoot) {
+    const leftFiles = inventoryOrdinaryFiles(leftRoot);
+    const rightFiles = inventoryOrdinaryFiles(rightRoot);
+    if (leftFiles.length !== rightFiles.length
+        || leftFiles.some((file, index) => file !== rightFiles[index])) {
+        return false;
+    }
+
+    // Compare exact bytes only after the deterministic relative-path inventories match.
+    for (const file of leftFiles) {
+        const left = fs.readFileSync(resolveRelativePath(leftRoot, file));
+        const right = fs.readFileSync(resolveRelativePath(rightRoot, file));
+        if (!left.equals(right)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Discover local concerns from one complete visibility snapshot.
 function listWorkspaceConcerns(visibility) {
     const visibilityRoot = path.join(namespaceRoot, visibility);
@@ -490,6 +510,11 @@ function replaceWorkspace(stagedRoot, state, visibilities, options = {}) {
     const activeNamespaceRoot = options.namespaceRoot || namespaceRoot;
     const activeStatePath = options.statePath || statePath;
     const renameSync = options.renameSync || fs.renameSync;
+    const maxRenameRetries = options.maxRenameRetries ?? 10;
+    const renameRetryDelay = options.renameRetryDelay ?? 100;
+    const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+    const waitForRenameRetry = options.waitForRenameRetry
+        || ((milliseconds) => Atomics.wait(retrySignal, 0, 0, milliseconds));
     fs.mkdirSync(activeNamespaceRoot, { recursive: true });
     const operationId = `${process.pid}-${crypto.randomUUID()}`;
     const incomingRoot = path.join(activeNamespaceRoot, `.incoming-${operationId}`);
@@ -500,20 +525,44 @@ function replaceWorkspace(stagedRoot, state, visibilities, options = {}) {
     fs.cpSync(stagedRoot, incomingRoot, { recursive: true, errorOnExist: true });
     inventoryOrdinaryFiles(incomingRoot);
 
+    // Retry transient sharing violations while retaining rename-based transactional replacement.
+    function renameWorkspaceEntry(source, destination) {
+        let retries = 0;
+
+        // Bound synchronous retries so a persistent lock still reaches rollback and failure reporting.
+        while (true) {
+            try {
+                renameSync(source, destination);
+                return;
+            } catch (error) {
+                const retryable = ['EACCES', 'EBUSY', 'EPERM'].includes(error.code);
+                if (!retryable || retries >= maxRenameRetries) {
+                    throw error;
+                }
+                retries += 1;
+                waitForRenameRetry(renameRetryDelay * retries);
+            }
+        }
+    }
+
     try {
         // Preserve current visibility snapshots until all incoming directories are ready.
         for (const visibility of visibilities) {
             const current = path.join(activeNamespaceRoot, visibility);
             const backup = path.join(activeNamespaceRoot, `.backup-${operationId}-${visibility}`);
-            if (fs.existsSync(current)) {
-                renameSync(current, backup);
-                backups.set(visibility, backup);
-            }
             const incoming = path.join(incomingRoot, visibility);
             if (!fs.existsSync(incoming)) {
                 fs.mkdirSync(incoming, { recursive: true });
             }
-            renameSync(incoming, current);
+            if (fs.existsSync(current) && ordinaryTreesEqual(current, incoming)) {
+                fs.rmSync(incoming, { recursive: true, force: true });
+                continue;
+            }
+            if (fs.existsSync(current)) {
+                renameWorkspaceEntry(current, backup);
+                backups.set(visibility, backup);
+            }
+            renameWorkspaceEntry(incoming, current);
             installed.add(visibility);
         }
 
@@ -532,7 +581,7 @@ function replaceWorkspace(stagedRoot, state, visibilities, options = {}) {
             }
             const backup = backups.get(visibility);
             if (backup && fs.existsSync(backup)) {
-                renameSync(backup, current);
+                renameWorkspaceEntry(backup, current);
             }
         }
         if (previousState) {

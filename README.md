@@ -154,7 +154,7 @@ Use the same overrides for subsequent load and publish operations.
 
 ## Tests
 
-The repository includes 15 isolated tests covering CLI routing, ignore-policy handling, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
+The repository includes 17 isolated tests covering CLI routing, ignore-policy handling, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, unchanged-snapshot retention, transient rename retries, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
 
 Run the complete suite and syntax validation from the repository:
 
