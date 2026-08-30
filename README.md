@@ -31,11 +31,33 @@ alice/private-data/notes/github.com/acme/widget/todo.md
 Inside Alice's checkout of `widget`, those files appear as:
 
 ```text
+#/.data-state.json
+#/version-layers.js
 #/public/tests/schema.json
 #/private/notes/todo.md
 ```
 
+The extension owns `version-layers.js` and refreshes it from its installed runtime source. Public and private test or benchmark dispatchers can import the same helper through `../../version-layers.js`; it is never published to either data repository.
+
 Visibility is explicit in the workspace, so public and private concerns never overlap. GitHub repository settings remain responsible for who can access each data repository.
+
+## Generated runtime support
+
+`#/version-layers.js` provides the common deterministic discovery contract used by materialized test and benchmark dispatchers. From `#/public/<concern>/index.js` or `#/private/<concern>/index.js`, load it with:
+
+```js
+const {
+  compareNames,
+  compareNumericNames,
+  discoverVersionLayers,
+  readDirectories,
+  versionPattern
+} = require('../../version-layers.js');
+```
+
+`discoverVersionLayers(root, packageVersion)` returns the base layer, matching major layer, matching major/minor layer, and eligible complete-version layers in ascending order within the package major. Prerelease and build package versions use their numeric `major.minor.patch` core. The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering.
+
+The helper is generated extension infrastructure rather than public or private repository content. Every initialized command restores its canonical installed bytes before data synchronization proceeds.
 
 ## Requirements
 
@@ -71,7 +93,7 @@ gh workspace-data init
 gh workspace-data load
 ```
 
-`init` reserves the generated `#/` namespace by enforcing its ignore policy. It does not add project-local command adapters; use the extension commands directly.
+`init` reserves the generated `#/` namespace, enforces its ignore policy, and installs the shared `#/version-layers.js` runtime helper. It does not add project-local command adapters; use the extension commands directly.
 
 `load` discovers and materializes every concern for the current project. A missing public or private data repository is skipped, so users may maintain either or both.
 
@@ -150,11 +172,13 @@ Use the same overrides for subsequent load and publish operations.
 - Existing `.npmignore` files also exclude `/#/`; an absent `.npmignore` is left absent so npm continues using `.gitignore`.
 - Materialized components use ordinary files and directories, never filesystem links.
 - Generated synchronization state tracks source revisions and open pull requests; do not edit it manually.
+- `#/version-layers.js` is extension-owned generated runtime support shared by public and private dispatchers; do not edit it manually.
+- Root-level generated runtime support is excluded from public and private publication.
 - Losing synchronization state blocks publication rather than risking unintended remote deletion.
 
 ## Tests
 
-The repository includes 17 isolated tests covering CLI routing, ignore-policy handling, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, unchanged-snapshot retention, transient rename retries, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
+The repository includes 24 isolated tests covering CLI routing, ignore-policy handling, generated runtime support and version ordering, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, unchanged-snapshot retention, transient rename retries, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
 
 Run the complete suite and syntax validation from the repository:
 

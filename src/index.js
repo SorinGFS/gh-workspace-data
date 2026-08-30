@@ -17,10 +17,45 @@ const protectedNames = new Set([
     '.git-credentials', '.netrc', '.bash_history', '.zsh_history',
     'microsoft.powershell_profile.ps1', 'desktop.ini', 'thumbs.db', '.ds_store'
 ]);
+const runtimeSupportName = 'version-layers.js';
+const runtimeSupportSourcePath = path.join(__dirname, runtimeSupportName);
 
 // Stop an unsafe or ambiguous synchronization path with a concise explanation.
 function fail(message) {
     throw new Error(message);
+}
+
+// Install the extension-owned runtime helper as an ordinary sibling of workspace state.
+function ensureRuntimeSupport(root = namespaceRoot) {
+    if (!root) {
+        fail('The generated workspace namespace is unavailable.');
+    }
+    if (fs.existsSync(root)) {
+        const rootStat = fs.lstatSync(root);
+        if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+            fail('# must be an ordinary directory.');
+        }
+    } else {
+        fs.mkdirSync(root, { recursive: true });
+    }
+
+    const sourceStat = fs.lstatSync(runtimeSupportSourcePath);
+    if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+        fail(`Extension runtime support is not an ordinary file: ${runtimeSupportSourcePath}`);
+    }
+    const expected = fs.readFileSync(runtimeSupportSourcePath);
+    const target = path.join(root, runtimeSupportName);
+    if (fs.existsSync(target)) {
+        const targetStat = fs.lstatSync(target);
+        if (targetStat.isSymbolicLink() || !targetStat.isFile()) {
+            fail(`#/${runtimeSupportName} must be an ordinary file.`);
+        }
+        if (fs.readFileSync(target).equals(expected)) {
+            return false;
+        }
+    }
+    fs.writeFileSync(target, expected);
+    return true;
 }
 
 // Run an inspected local executor without invoking a shell or accepting unexpected exit states.
@@ -484,23 +519,32 @@ function readState(projectIdentity, required = false) {
 }
 
 // Reject unknown # content because it cannot be assigned deterministic synchronization semantics.
-function verifyNamespaceShape(hasState) {
-    if (!fs.existsSync(namespaceRoot)) {
+function verifyNamespaceShape(hasState, root = namespaceRoot) {
+    if (!fs.existsSync(root)) {
         return;
     }
-    if (!fs.lstatSync(namespaceRoot).isDirectory()) {
+    const namespaceStat = fs.lstatSync(root);
+    if (namespaceStat.isSymbolicLink() || !namespaceStat.isDirectory()) {
         fail('# must be an ordinary directory.');
     }
 
-    const allowed = new Set(['public', 'private', '.data-state.json']);
+    const allowed = new Set(['public', 'private', '.data-state.json', runtimeSupportName]);
+    const names = fs.readdirSync(root);
 
     // Keep legacy manifests and unassociated root concerns outside automatic deletion decisions.
-    for (const name of fs.readdirSync(namespaceRoot)) {
+    for (const name of names) {
         if (!allowed.has(name)) {
             fail(`Unrecognized generated data path #/${name}; move or remove it before synchronization.`);
         }
+        if (name === runtimeSupportName) {
+            const supportStat = fs.lstatSync(path.join(root, name));
+            if (supportStat.isSymbolicLink() || !supportStat.isFile()) {
+                fail(`#/${runtimeSupportName} must be an ordinary file.`);
+            }
+        }
     }
-    if (!hasState && fs.readdirSync(namespaceRoot).length > 0) {
+    const synchronizedNames = names.filter((name) => name !== runtimeSupportName);
+    if (!hasState && synchronizedNames.length > 0) {
         fail('Existing # data has no synchronization state; refusing to infer a destructive baseline.');
     }
 }
@@ -1060,6 +1104,9 @@ function main() {
     }
     dataRepositories = deriveDataRepositories(projectIdentity, actor);
 
+    // Keep shared public/private runtime support synchronized for every initialized command.
+    ensureRuntimeSupport();
+
     if (command === 'init') {
         initializeProject();
     } else {
@@ -1084,10 +1131,12 @@ function execute() {
 
 module.exports = {
     completeOwnedPublicationCycle,
+    ensureRuntimeSupport,
     establishProjectRoot,
     execute,
     ensureIgnorePolicy,
     mergeOwnedPublications,
     preparePublicationBranch,
-    replaceWorkspace
+    replaceWorkspace,
+    verifyNamespaceShape
 };

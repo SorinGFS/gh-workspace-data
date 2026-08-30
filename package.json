@@ -1,10 +1,10 @@
 {
   "name": "gh-workspace-data",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Materialize and publish project-associated workspace data through GitHub CLI",
   "private": true,
   "scripts": {
-    "check": "node --check gh-workspace-data && node --check src/index.js",
+    "check": "node --check gh-workspace-data && node --check src/index.js && node --check src/version-layers.js",
     "test": "node --test"
   },
   "engines": {
