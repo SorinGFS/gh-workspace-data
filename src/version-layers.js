@@ -24,11 +24,12 @@ const parseVersionLayer = (name) => {
     return match ? match.slice(1).filter((part) => part !== undefined).map(Number) : undefined;
 };
 
-// Compare complete semantic versions in major, minor, and patch order.
+// Compare semantic-version layers after treating omitted minor and patch components as zero.
 const compareVersions = (left, right) => {
-    // Return the first differing component so complete layers remain numerically ordered.
+    // Return the first differing component so partial and complete layers remain numerically ordered.
     for (let index = 0; index < 3; index++) {
-        if (left[index] !== right[index]) return left[index] - right[index];
+        const difference = (left[index] ?? 0) - (right[index] ?? 0);
+        if (difference !== 0) return difference;
     }
     return 0;
 };
@@ -37,10 +38,13 @@ const compareVersions = (left, right) => {
 const readDirectories = (root) => fs.readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory());
 
-// Select base, major, minor, and introduced-at-version layers in their shared order.
-const discoverVersionLayers = (root, packageVersionString) => {
+// Select exact-scope layers by default or every compatible earlier layer when requested.
+const discoverVersionLayers = (root, packageVersionString, options = {}) => {
     const packageVersionMatch = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+].*)?$/.exec(packageVersionString);
     assert.ok(packageVersionMatch, `Unsupported package version: ${packageVersionString}`);
+    assert.ok(options && typeof options === 'object', 'Version-layer options must be an object.');
+    const backwardsCompatible = options.backwardsCompatible ?? false;
+    assert.equal(typeof backwardsCompatible, 'boolean', 'backwardsCompatible must be a boolean.');
     const packageVersion = packageVersionMatch.slice(1, 4).map(Number);
     const versionLayers = new Map();
 
@@ -51,6 +55,17 @@ const discoverVersionLayers = (root, packageVersionString) => {
     }
 
     const layers = [{ name: '.', root }];
+    if (backwardsCompatible) {
+        // Treat partial layers as introduction versions and include every layer not newer than the package.
+        const compatibleLayers = [...versionLayers.values()]
+            .filter((layer) => compareVersions(layer.version, packageVersion) <= 0)
+            .sort((left, right) => compareVersions(left.version, right.version)
+                || left.version.length - right.version.length
+                || compareNames(left, right));
+        layers.push(...compatibleLayers);
+        return layers;
+    }
+
     const majorLayer = versionLayers.get(`v${packageVersion[0]}`);
     if (majorLayer) layers.push(majorLayer);
     const minorLayer = versionLayers.get(`v${packageVersion[0]}.${packageVersion[1]}`);

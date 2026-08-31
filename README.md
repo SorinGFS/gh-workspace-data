@@ -55,7 +55,28 @@ const {
 } = require('../../version-layers.js');
 ```
 
-`discoverVersionLayers(root, packageVersion)` returns the base layer, matching major layer, matching major/minor layer, and eligible complete-version layers in ascending order within the package major. Prerelease and build package versions use their numeric `major.minor.patch` core. The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering.
+`discoverVersionLayers(root, packageVersion)` returns the base layer, matching major layer, matching major/minor layer, and eligible complete-version layers in ascending order within the package major. Prerelease and build package versions use their numeric `major.minor.patch` core.
+
+A dispatcher whose selected callback preserves older expectations can request cumulative semantic-version layers:
+
+```js
+const layers = discoverVersionLayers(root, packageVersion, {
+  backwardsCompatible: true
+});
+```
+
+In this mode, every version layer whose semantic introduction point is not newer than the package is eligible, including layers from older majors. Omitted components are treated as zero: `v15` means `15.0.0`, while `v15.1` means `15.1.0`. Layers run in ascending semantic order; equal introduction points run from least to most specific, such as `v17`, `v17.0`, then `v17.0.0`. The option must be boolean and defaults to `false`, preserving exact-scope behavior for existing dispatchers.
+
+Public test dispatchers can expose this choice in `#/public/tests/index.json` alongside the callback name:
+
+```json
+{
+  "callback": "isIdnHostname",
+  "backwardsCompatible": true
+}
+```
+
+The setting describes the selected callback's compatibility contract. Set it only when older fixture expectations remain valid for newer package versions, allowing version folders to store deltas without copying prior tests. The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering.
 
 The helper is generated extension infrastructure rather than public or private repository content. Every initialized command restores its canonical installed bytes before data synchronization proceeds.
 
@@ -178,7 +199,7 @@ Use the same overrides for subsequent load and publish operations.
 
 ## Tests
 
-The repository includes 24 isolated tests covering CLI routing, ignore-policy handling, generated runtime support and version ordering, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, unchanged-snapshot retention, transient rename retries, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
+The repository includes 26 isolated tests covering CLI routing, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, option validation, owned-PR merge qualification, deferred reload behavior, publication history, nested-directory invocation, unchanged-snapshot retention, transient rename retries, workspace replacement, and rollback. The suite uses temporary repositories and injected GitHub operations so it does not publish or merge live workspace data.
 
 Run the complete suite and syntax validation from the repository:
 
