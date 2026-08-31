@@ -219,13 +219,68 @@ Use the same overrides for subsequent `load` and `publish` operations.
 const {
   compareNames,
   compareNumericNames,
+  discoverConcernEntryPoints,
+  discoverNumberedJsonFixtures,
   discoverVersionLayers,
+  discoverVersionLayerSets,
   readDirectories,
+  selectVersionLayers,
   versionPattern
 } = require('../../version-layers.js');
 ```
 
-The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering. `readDirectories` returns direct ordinary child directories, and `versionPattern` identifies supported version-layer names.
+The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering. `readDirectories` returns direct ordinary child directories, and `versionPattern` identifies supported version-layer names. `discoverVersionLayers` retains the original exact-or-cumulative selection API.
+
+### Traversal descriptors
+
+Consumers that apply exact and cumulative policies to different content can discover both sets once:
+
+```js
+const layerSets = discoverVersionLayerSets(root, packageVersion);
+const fixtureLayers = selectVersionLayers(layerSets, {
+  backwardsCompatible: configuration.backwardsCompatible ?? false
+});
+const suiteLayers = layerSets.exact;
+```
+
+For a package at `17.0.2` with `v15.1`, `v16.0`, `v17.0`, and `v18.0` directories, `layerSets` contains:
+
+```js
+{
+  exact: ['.', 'v17.0'],
+  cumulative: ['.', 'v15.1', 'v16.0', 'v17.0']
+}
+```
+
+The actual arrays contain `{ name, root }` layer descriptors. The example shows their names for brevity.
+
+`discoverNumberedJsonFixtures(fixtureLayers)` flattens numeric collection directories and numbered JSON files into deterministic descriptors:
+
+```js
+{
+  layer: 'v15.1',
+  collection: '0',
+  file: '2.json',
+  id: 'v15.1/0/2.json',
+  path: '/project/#/public/tests/v15.1/0/2.json'
+}
+```
+
+It preserves supplied layer order, then sorts collections and files numerically. Every discovered numeric collection must contain at least one numbered JSON fixture. The function does not read or interpret JSON content.
+
+`discoverConcernEntryPoints(suiteLayers)` finds ordinary `index.js` files in explicit nonnumeric, nonversion concern directories:
+
+```js
+{
+  layer: 'v17.0',
+  concern: 'idna-test-v2',
+  id: 'v17.0/idna-test-v2',
+  root: '/project/#/public/tests/v17.0/idna-test-v2',
+  entryPoint: '/project/#/public/tests/v17.0/idna-test-v2/index.js'
+}
+```
+
+It preserves supplied layer order and sorts concerns lexically. It returns descriptors without loading entry points, leaving configuration, package API injection, assertions, and execution under consumer control.
 
 The helper is never published to either data repository. Every initialized command restores its canonical installed bytes before synchronization, so it should not be edited manually.
 
@@ -249,7 +304,7 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 
 Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
 
-Run syntax validation and all 26 isolated tests with:
+Run syntax validation and all 30 isolated tests with:
 
 ```sh
 npm run check

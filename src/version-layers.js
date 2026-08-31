@@ -38,6 +38,16 @@ const compareVersions = (left, right) => {
 const readDirectories = (root) => fs.readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory());
 
+// Require an ordered layer collection before traversing its filesystem roots.
+const validateLayers = (layers) => {
+    assert.ok(Array.isArray(layers), 'Version layers must be an array.');
+    for (const layer of layers) {
+        assert.ok(layer && typeof layer === 'object', 'Each version layer must be an object.');
+        assert.equal(typeof layer.name, 'string', 'Each version layer must have a string name.');
+        assert.equal(typeof layer.root, 'string', 'Each version layer must have a string root.');
+    }
+};
+
 // Select exact-scope layers by default or every compatible earlier layer when requested.
 const discoverVersionLayers = (root, packageVersionString, options = {}) => {
     const packageVersionMatch = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+].*)?$/.exec(packageVersionString);
@@ -78,10 +88,97 @@ const discoverVersionLayers = (root, packageVersionString, options = {}) => {
     return layers;
 };
 
+// Return both stable selection policies so one consumer can apply them to different content types.
+const discoverVersionLayerSets = (root, packageVersionString) => ({
+    exact: discoverVersionLayers(root, packageVersionString),
+    cumulative: discoverVersionLayers(root, packageVersionString, { backwardsCompatible: true }),
+});
+
+// Choose one discovered policy through the existing backwards-compatible option contract.
+const selectVersionLayers = (layerSets, options = {}) => {
+    assert.ok(layerSets && typeof layerSets === 'object', 'Version layer sets must be an object.');
+    validateLayers(layerSets.exact);
+    validateLayers(layerSets.cumulative);
+    assert.ok(options && typeof options === 'object', 'Version-layer selection options must be an object.');
+    const backwardsCompatible = options.backwardsCompatible ?? false;
+    assert.equal(typeof backwardsCompatible, 'boolean', 'backwardsCompatible must be a boolean.');
+    return backwardsCompatible ? layerSets.cumulative : layerSets.exact;
+};
+
+// Flatten numeric collections into independently addressable JSON fixtures in deterministic order.
+const discoverNumberedJsonFixtures = (layers) => {
+    validateLayers(layers);
+    const fixtures = [];
+
+    // Preserve caller-supplied semantic layer order before numeric collection and filename order.
+    for (const layer of layers) {
+        const numericDirectories = readDirectories(layer.root)
+            .filter((entry) => /^\d+$/.test(entry.name))
+            .sort(compareNumericNames);
+
+        // Require every discovered numeric collection to contain at least one numbered JSON fixture.
+        for (const directory of numericDirectories) {
+            const collectionRoot = path.join(layer.root, directory.name);
+            const fixtureFiles = fs.readdirSync(collectionRoot, { withFileTypes: true })
+                .filter((entry) => entry.isFile() && /^\d+\.json$/.test(entry.name))
+                .sort(compareNumericNames);
+            assert.ok(fixtureFiles.length > 0, `${layer.name}/${directory.name} contains no numbered JSON fixtures.`);
+
+            // Retain filesystem and portable source identifiers without interpreting fixture contents.
+            for (const fixtureFile of fixtureFiles) {
+                const prefix = layer.name === '.' ? '' : `${layer.name}/`;
+                fixtures.push({
+                    layer: layer.name,
+                    collection: directory.name,
+                    file: fixtureFile.name,
+                    id: `${prefix}${directory.name}/${fixtureFile.name}`,
+                    path: path.join(collectionRoot, fixtureFile.name),
+                });
+            }
+        }
+    }
+    return fixtures;
+};
+
+// Find explicit nonnumeric index.js concerns while preserving layer and lexical concern order.
+const discoverConcernEntryPoints = (layers) => {
+    validateLayers(layers);
+    const concerns = [];
+
+    // Keep version selectors and numeric collections outside explicit concern discovery.
+    for (const layer of layers) {
+        const concernDirectories = readDirectories(layer.root)
+            .filter((entry) => !/^\d+$/.test(entry.name) && !versionPattern.test(entry.name))
+            .filter((entry) => {
+                const entryPoint = path.join(layer.root, entry.name, 'index.js');
+                return fs.existsSync(entryPoint) && fs.lstatSync(entryPoint).isFile();
+            })
+            .sort(compareNames);
+
+        // Return descriptors rather than loading entry points so consumers retain execution control.
+        for (const concern of concernDirectories) {
+            const prefix = layer.name === '.' ? '' : `${layer.name}/`;
+            const root = path.join(layer.root, concern.name);
+            concerns.push({
+                layer: layer.name,
+                concern: concern.name,
+                id: `${prefix}${concern.name}`,
+                root,
+                entryPoint: path.join(root, 'index.js'),
+            });
+        }
+    }
+    return concerns;
+};
+
 module.exports = {
     compareNames,
     compareNumericNames,
+    discoverConcernEntryPoints,
+    discoverNumberedJsonFixtures,
     discoverVersionLayers,
+    discoverVersionLayerSets,
     readDirectories,
+    selectVersionLayers,
     versionPattern,
 };
