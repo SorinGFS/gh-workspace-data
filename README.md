@@ -23,7 +23,7 @@ acme/public-data/tests/github.com/acme/widget/...       #/public/tests/...
 alice/private-data/notes/github.com/acme/widget/...     #/private/notes/...
 ```
 
-Public and private concerns never overlap in the workspace. GitHub repository visibility and access settings remain responsible for confidentiality.
+Similar public and private concerns never overlap in the workspace. GitHub repository visibility and access settings remain responsible for confidentiality.
 
 The normal workflow is:
 
@@ -38,6 +38,8 @@ gh workspace-data publish
 
 ## Versioned data folders
 
+Optionally, the stored data can be organized into versioned layers.
+
 A concern can keep all data at its root, divide it into semantic-version folders, or combine both:
 
 ```text
@@ -45,11 +47,13 @@ A concern can keep all data at its root, divide it into semantic-version folders
   index.js                 # Base data: always available
   index.json
   v15.1/                   # Version layer introduced at 15.1.0
-    0/
+    0/                     # Unnamed (numeric) test suite
+    1/                     # Unnamed (numeric) test suite
   v16.0/                   # Version layer introduced at 16.0.0
-    0/
+    0/                     # Unnamed (numeric) test suite
   v17.0.2/                 # Complete version layer
-    regression/
+    0/                     # Unnamed (numeric) test suite
+    regression/            # Named test suite
 
 #/private/benchmarks/
   index.js                 # Private concerns use the same layout
