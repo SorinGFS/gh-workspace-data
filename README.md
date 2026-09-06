@@ -36,87 +36,6 @@ gh workspace-data publish
 
 `publish` opens or updates pull requests; it never pushes changes directly to a data repository's default branch.
 
-## Versioned data folders
-
-Optionally, the stored data can be organized into versioned layers.
-
-A concern can keep all data at its root, divide it into semantic-version folders, or combine both:
-
-```text
-#/public/tests/
-  index.js                 # Base data: always available
-  index.json
-  v15.1/                   # Version layer introduced at 15.1.0
-    0/                     # Unnamed (numeric) test suite
-    1/                     # Unnamed (numeric) test suite
-  v16.0/                   # Version layer introduced at 16.0.0
-    0/                     # Unnamed (numeric) test suite
-  v17.0.2/                 # Complete version layer
-    0/                     # Unnamed (numeric) test suite
-    regression/            # Named test suite
-
-#/private/benchmarks/
-  index.js                 # Private concerns use the same layout
-  v17/
-    experimental-scenario/
-```
-
-The extension synchronizes these directories as ordinary data. It does not decide which version layers a test runner, benchmark, or other consumer should execute. Consumers opt into selection by importing the generated `#/version-layers.js` helper and calling `discoverVersionLayers`.
-
-### Selection modes
-
-`discoverVersionLayers(root, packageVersion)` supports two policies:
-
-| Policy | Invocation | Meaning |
-| --- | --- | --- |
-| Exact scope | `discoverVersionLayers(root, version)` | Base data, matching major and major/minor folders, plus eligible complete versions from the same major |
-| Backwards compatible | `discoverVersionLayers(root, version, { backwardsCompatible: true })` | Base data plus every semantic-version layer whose introduction point is not newer than the package |
-
-For package version `1.2.3`, exact-scope discovery includes:
-
-```text
-.          base layer
-v1         matching major
-v1.2       matching major/minor
-v1.0.0     complete version in major 1 and not newer than 1.2.3
-v1.1.3     complete version in major 1 and not newer than 1.2.3
-v1.2.3     exact complete version
-```
-
-It excludes `v1.1` because partial minor layers must match the package minor, `v1.2.4` because it is newer, and every `v2` layer because it belongs to another major.
-
-With `backwardsCompatible: true`, every valid layer at or before `1.2.3` is eligible across major boundaries. Partial folders are introduction points: `v1` means `1.0.0`, and `v1.2` means `1.2.0`. Layers run in ascending semantic order. Equal introduction points run from least to most specific, for example `v1`, `v1.0`, then `v1.0.0`.
-
-Use cumulative discovery only when older expectations remain valid for the newer package. It supports delta-only folders, but it must not be used merely to make older data visible when that data describes an incompatible contract.
-
-<details>
-<summary><strong>Dispatcher configuration and mixed concerns</strong></summary>
-
-A public test dispatcher can expose cumulative fixture selection in `#/public/tests/index.json`:
-
-```json
-{
-  "callback": "isIdnHostname",
-  "backwardsCompatible": true
-}
-```
-
-This JSON file is a dispatcher convention; `gh-workspace-data` does not interpret it. The dispatcher decides how the setting applies. For example, a test dispatcher may accumulate numeric callback fixtures while retaining exact-scope selection for explicit conformance suites.
-
-The same helper and policies are available to private concerns. Visibility changes where data is stored and materialized, not how semantic versions are compared.
-
-Directory names are version selectors only when they match:
-
-```text
-v<major>
-v<major>.<minor>
-v<major>.<minor>.<patch>
-```
-
-Components use non-negative decimal integers without leading zeroes except `0`. Package prerelease and build versions use their numeric `major.minor.patch` core.
-
-</details>
-
 ## Install and get started
 
 ### Requirements
@@ -212,6 +131,87 @@ WORKSPACE_DATA_PRIVATE_REPOSITORY=user/personal-data gh workspace-data load
 ```
 
 Use the same overrides for subsequent `load` and `publish` operations.
+
+</details>
+
+## Versioned data folders
+
+Optionally, the stored data can be organized into versioned layers.
+
+A concern can keep all data at its root, divide it into semantic-version folders, or combine both:
+
+```text
+#/public/tests/
+  index.js                 # Base data: always available
+  index.json
+  v15.1/                   # Version layer introduced at 15.1.0
+    0/                     # Unnamed (numeric) test suite
+    1/                     # Unnamed (numeric) test suite
+  v16.0/                   # Version layer introduced at 16.0.0
+    0/                     # Unnamed (numeric) test suite
+  v17.0.2/                 # Complete version layer
+    0/                     # Unnamed (numeric) test suite
+    regression/            # Named test suite
+
+#/private/benchmarks/
+  index.js                 # Private concerns use the same layout
+  v17/
+    experimental-scenario/
+```
+
+The extension synchronizes these directories as ordinary data. It does not decide which version layers a test runner, benchmark, or other consumer should execute. Consumers opt into selection by importing the generated `#/version-layers.js` helper and calling `discoverVersionLayers`.
+
+### Selection modes
+
+`discoverVersionLayers(root, packageVersion)` supports two policies:
+
+| Policy | Invocation | Meaning |
+| --- | --- | --- |
+| Exact scope | `discoverVersionLayers(root, version)` | Base data, matching major and major/minor folders, plus eligible complete versions from the same major |
+| Backwards compatible | `discoverVersionLayers(root, version, { backwardsCompatible: true })` | Base data plus every semantic-version layer whose introduction point is not newer than the package |
+
+For package version `1.2.3`, exact-scope discovery includes:
+
+```text
+.          base layer
+v1         matching major
+v1.2       matching major/minor
+v1.0.0     complete version in major 1 and not newer than 1.2.3
+v1.1.3     complete version in major 1 and not newer than 1.2.3
+v1.2.3     exact complete version
+```
+
+It excludes `v1.1` because partial minor layers must match the package minor, `v1.2.4` because it is newer, and every `v2` layer because it belongs to another major.
+
+With `backwardsCompatible: true`, every valid layer at or before `1.2.3` is eligible across major boundaries. Partial folders are introduction points: `v1` means `1.0.0`, and `v1.2` means `1.2.0`. Layers run in ascending semantic order. Equal introduction points run from least to most specific, for example `v1`, `v1.0`, then `v1.0.0`.
+
+Use cumulative discovery only when older expectations remain valid for the newer package. It supports delta-only folders, but it must not be used merely to make older data visible when that data describes an incompatible contract.
+
+<details>
+<summary><strong>Dispatcher configuration and mixed concerns</strong></summary>
+
+A public test dispatcher can expose cumulative fixture selection in `#/public/tests/index.json`:
+
+```json
+{
+  "callback": "isIdnHostname",
+  "backwardsCompatible": true
+}
+```
+
+This JSON file is a dispatcher convention; `gh-workspace-data` does not interpret it. The dispatcher decides how the setting applies. For example, a test dispatcher may accumulate numeric callback fixtures while retaining exact-scope selection for explicit conformance suites.
+
+The same helper and policies are available to private concerns. Visibility changes where data is stored and materialized, not how semantic versions are compared.
+
+Directory names are version selectors only when they match:
+
+```text
+v<major>
+v<major>.<minor>
+v<major>.<minor>.<patch>
+```
+
+Components use non-negative decimal integers without leading zeroes except `0`. Package prerelease and build versions use their numeric `major.minor.patch` core.
 
 </details>
 
