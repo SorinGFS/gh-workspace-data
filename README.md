@@ -136,7 +136,7 @@ Use the same overrides for subsequent `load` and `publish` operations.
 
 ## Versioned data folders
 
-Optionally, the stored data can be organized into versioned layers.
+Optionally, the stored data can be organized into versioned layers. When initialized on a repository, the extension provides the `#/version-layers.js` helper that can be used to discover the stored version layers and its output can be used in consumer scripts.
 
 A concern can keep all data at its root, divide it into semantic-version folders, or combine both:
 
@@ -215,7 +215,7 @@ Components use non-negative decimal integers without leading zeroes except `0`. 
 
 </details>
 
-## Generated runtime support
+### Generated runtime support
 
 `#/version-layers.js` is extension-owned infrastructure shared by public and private consumers. From `#/public/<concern>/index.js` or `#/private/<concern>/index.js`, import it with:
 
