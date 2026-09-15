@@ -492,28 +492,6 @@ function resolveLoadTarget(repositoryPath, repository, repositoryState, defaultR
     };
 }
 
-// Apply a workspace patch with Git's three-way merge semantics and surface conflicts.
-function applyWorkspacePatch(repositoryPath, targetRevision, patchRevision, visibility, actor) {
-    git(repositoryPath, ['checkout', '--detach', '--force', targetRevision]);
-    if (!patchRevision) {
-        return;
-    }
-
-    const identityArgs = ['-c', `user.name=${actor}`, '-c', `user.email=${actor}@users.noreply.github.com`];
-    const cherryPick = git(repositoryPath, [...identityArgs, 'cherry-pick', patchRevision], { acceptedStatuses: [0, 1] });
-    if (cherryPick.status === 0) {
-        return;
-    }
-
-    const conflicts = git(repositoryPath, ['diff', '--name-only', '--diff-filter=U']).stdout.trim();
-    if (conflicts) {
-        git(repositoryPath, ['cherry-pick', '--abort']);
-        fail(`Remote and #/${visibility} changes conflict:\n${conflicts}`);
-    }
-
-    git(repositoryPath, ['cherry-pick', '--skip']);
-}
-
 // Copy the selected project subtrees from one Git revision into a visibility staging directory.
 function materializeVisibility(repositoryPath, revision, projectIdentity, destination) {
     fs.mkdirSync(destination, { recursive: true });
@@ -862,8 +840,11 @@ function replaceWorkspace(stagedRoot, state, visibilities, options = {}) {
     }
 }
 
-// Load or reconcile every automatically matched concern from both data repositories.
-function loadAll(projectIdentity, actor) {
+// Replace every available visibility with its selected remote snapshot.
+function loadAll(projectIdentity, operations = {}) {
+    const repositories = operations.dataRepositories || dataRepositories;
+    const readMetadata = operations.readRepositoryMetadata || readRepositoryMetadata;
+    const cloneDataRepository = operations.cloneRepository || cloneRepository;
     const previousState = readState(projectIdentity, false);
     verifyNamespaceShape(Boolean(previousState));
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-load-'));
@@ -871,10 +852,10 @@ function loadAll(projectIdentity, actor) {
     const nextState = { version: stateVersion, projectIdentity, repositories: {} };
 
     try {
-        // Reconcile each visibility independently while committing both snapshots together locally.
-        for (const [visibility, repository] of Object.entries(dataRepositories)) {
+        // Stage each selected remote visibility independently before one atomic local replacement.
+        for (const [visibility, repository] of Object.entries(repositories)) {
             const oldRepositoryState = previousState && previousState.repositories[visibility];
-            const metadata = readRepositoryMetadata(repository, true);
+            const metadata = readMetadata(repository, true);
             if (!metadata) {
                 if (oldRepositoryState && oldRepositoryState.availability === 'available') {
                     fail(`${repository} became unavailable; preserving #/${visibility} and its recorded baseline.`);
@@ -892,40 +873,15 @@ function loadAll(projectIdentity, actor) {
                 continue;
             }
 
-            const repositoryPath = cloneRepository(repository, path.join(temporaryRoot, `${visibility}-repository`));
+            const repositoryPath = cloneDataRepository(repository, path.join(temporaryRoot, `${visibility}-repository`));
             const defaultRevision = git(repositoryPath, ['rev-parse', `origin/${metadata.default_branch}`]).stdout.trim();
             const availableState = oldRepositoryState && oldRepositoryState.availability === 'available'
                 ? oldRepositoryState
                 : null;
             const target = resolveLoadTarget(repositoryPath, repository, availableState, defaultRevision);
-            let patchRevision = null;
-
-            if (availableState) {
-                patchRevision = createWorkspacePatch(
-                    repositoryPath,
-                    availableState.baseRevision,
-                    visibility,
-                    projectIdentity,
-                    actor,
-                    availableState.pullRequest && availableState.pullRequest.number
-                );
-            } else if (listWorkspaceConcerns(visibility).length > 0) {
-                const remoteEntries = listProjectEntries(repositoryPath, defaultRevision, projectIdentity);
-                if (remoteEntries.length > 0) {
-                    fail(`#/${visibility} and newly available ${repository} both contain project data without a shared baseline.`);
-                }
-                patchRevision = createWorkspacePatch(
-                    repositoryPath,
-                    defaultRevision,
-                    visibility,
-                    projectIdentity,
-                    actor
-                );
-            }
-
+            git(repositoryPath, ['checkout', '--detach', '--force', target.revision]);
             const baseline = buildBaselineInventory(repositoryPath, target.revision, projectIdentity);
-            applyWorkspacePatch(repositoryPath, target.revision, patchRevision, visibility, actor);
-            materializeVisibility(repositoryPath, 'HEAD', projectIdentity, path.join(stagedRoot, visibility));
+            materializeVisibility(repositoryPath, target.revision, projectIdentity, path.join(stagedRoot, visibility));
             nextState.repositories[visibility] = {
                 availability: 'available',
                 repository,
@@ -938,7 +894,7 @@ function loadAll(projectIdentity, actor) {
             };
         }
 
-        replaceWorkspace(stagedRoot, nextState, Object.keys(dataRepositories));
+        replaceWorkspace(stagedRoot, nextState, Object.keys(repositories));
         console.log(`Loaded all data for ${projectIdentity} into #/public and #/private.`);
     } finally {
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
@@ -1250,7 +1206,7 @@ function publishAll(projectIdentity, actor, options = {}) {
         completeOwnedPublicationCycle(
             publications,
             actor,
-            () => loadAll(projectIdentity, actor)
+            () => loadAll(projectIdentity)
         );
     }
 }
@@ -1261,7 +1217,7 @@ function printHelp() {
 
 Commands:
   init                    Reserve the generated # workspace namespace
-  load                    Load or reconcile all matched public and private concerns
+  load                    Replace matched public and private concerns from remote data
   status --json           Inspect local changes against the loaded baseline using protocol v1
   show --protocol 1       Emit one revision-matched loaded baseline file as verified raw bytes
   publish                 Publish all workspace changes through contribution branches and PRs
@@ -1384,7 +1340,7 @@ function main() {
     } else {
         ensureIgnorePolicy();
         if (command === 'load') {
-            loadAll(projectIdentity, actor);
+            loadAll(projectIdentity);
         } else {
             publishAll(projectIdentity, actor, { mergeOwned });
         }
@@ -1410,6 +1366,7 @@ module.exports = {
     execute,
     ensureIgnorePolicy,
     inspectWorkspaceStatus,
+    loadAll,
     mergeOwnedPublications,
     preparePublicationBranch,
     readBaselineBytes,

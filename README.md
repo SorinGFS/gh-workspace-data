@@ -60,7 +60,7 @@ gh workspace-data load
 
 `init` reserves the generated `#/` namespace, enforces its ignore policy, and installs `#/version-layers.js`. It does not add project-local wrappers or scripts.
 
-`load` derives the project identity from Git `origin`, discovers every matching public and private concern, and materializes them in the workspace. A missing public or private repository is skipped, so either visibility can be used independently.
+`load` derives the project identity from Git `origin`, discovers every matching public and private concern, and replaces each available visibility with its selected remote snapshot. **Loading discards unpublished local changes under `#/public` and `#/private`.** A missing public or private repository is skipped, so either visibility can be used independently.
 
 Before publishing to a data repository, create it on GitHub with the intended visibility and at least one initial commit. Then add ordinary files beneath a visibility and concern:
 
@@ -77,13 +77,13 @@ gh workspace-data publish
 
 ## Loading and publication
 
-1. Run `load` to obtain or refresh public and private project data.
+1. Run `load` to replace public and private project data with the selected remote snapshots.
 2. Add, edit, move, or delete files under `#/public` and `#/private`.
 3. Run `publish` to create or update separate pull requests for changed public and private data.
 4. Review and merge those pull requests, or use `publish --merge-owned` where appropriate.
 5. Run `load` after a manual or deferred merge to refresh immediately, or let the next publication begin from the merged default branch.
 
-Deleting loaded files or complete concerns and publishing intentionally deletes their corresponding data-repository content. If remote and workspace edits conflict, synchronization stops instead of selecting a version silently.
+Deleting loaded files or complete concerns and publishing intentionally deletes their corresponding data-repository content. Publication stops when workspace changes cannot be applied to the current destination without conflict. Loading does not reconcile local changes; it intentionally replaces them with remote data.
 
 <details>
 <summary><strong>Automatic merging for repositories you own</strong></summary>
@@ -159,6 +159,14 @@ For an added file, `baseline.available` is `false`; modified and deleted files h
 `show` writes the exact baseline bytes for one path to standard output. The visibility and concern-relative `--path` must identify an entry returned by the loaded baseline, and `--revision` must equal that visibility's reported `baselineRevision`; added files cannot be shown. The command retrieves the recorded Git blob through the authenticated GitHub CLI, verifies its size and SHA-256 digest against local state, and emits no bytes if the revision changed or verification fails. It never selects a newer commit. Consumers should treat the output as binary and include the reported baseline revision in any cached or virtual-document URI.
 
 Synchronization state version 2 records repository identity, the repository containing each baseline object, source path, Git blob ID, SHA-256 digest, size, and file mode. This generated inventory is the authority for inspection and is refreshed atomically with materialized data. Version 1 remains accepted by load and publish, but inspection reports `reloadRequired` until a successful load creates version 2 state.
+
+### VSCodium and VS Code integration
+
+The companion [Workspace Data extension](https://github.com/SorinGFS/codium-workspace-data) consumes this protocol and presents public and private changes through the editor's native Source Control and diff interfaces. It delegates repository mapping, authentication, baseline retrieval, loading, and publication back to `gh-workspace-data`; it does not create another Git repository under `#/` or compare with a newer remote revision.
+
+Install the VSIX from the companion extension's [latest GitHub release](https://github.com/SorinGFS/codium-workspace-data/releases/latest), reload the editor window, and open the Source Control view. If the repository selector is hidden, reveal the **Repositories** view and select **Workspace Data**. The provider intentionally has no commit input because **Workspace Data: Publish** publishes through pull requests rather than Git commits. Its Load action checks current status and requests confirmation before overwriting unpublished changes.
+
+See the companion extension's README for its complete installation and usage workflow.
 
 ## Repository selection
 
@@ -361,7 +369,7 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 
 Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, read-only status and baseline retrieval, baseline integrity checks, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
 
-Run syntax validation and all 30 isolated tests with:
+Run syntax validation and all 38 isolated tests with:
 
 ```sh
 npm run check
