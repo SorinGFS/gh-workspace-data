@@ -42,7 +42,7 @@ test('reports installed capabilities outside a Git repository', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
     command: 'gh workspace-data',
-    version: '0.7.2',
+    version: '0.7.3',
     inspectionProtocolVersions: [1],
     loadBehavior: 'replace'
   });

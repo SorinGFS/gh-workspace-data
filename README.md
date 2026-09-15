@@ -127,7 +127,7 @@ gh workspace-data show --protocol 1 --visibility public --revision 0123456789abc
 ```json
 {
   "command": "gh workspace-data",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "inspectionProtocolVersions": [1],
   "loadBehavior": "replace"
 }
@@ -243,7 +243,8 @@ A concern can keep all data at its root, divide it into semantic-version folders
 
 The extension synchronizes these directories as ordinary data. It does not decide which version layers a test runner, benchmark, or other consumer should execute. Consumers opt into selection by importing the generated `#/version-layers.js` helper and calling `discoverVersionLayers`.
 
-### Selection modes
+<details>
+<summary><strong>Selection modes</strong></summary>
 
 `discoverVersionLayers(root, packageVersion)` supports two policies:
 
@@ -297,7 +298,10 @@ Components use non-negative decimal integers without leading zeroes except `0`. 
 
 </details>
 
-### Generated runtime support
+</details>
+
+<details>
+<summary><strong>Generated runtime support</strong></summary>
 
 `#/version-layers.js` is extension-owned infrastructure shared by public and private consumers. From `#/public/<concern>/index.js` or `#/private/<concern>/index.js`, import it with:
 
@@ -317,7 +321,10 @@ const {
 
 The comparators provide locale-independent lexical ordering and arbitrary-size numeric ordering. `readDirectories` returns direct ordinary child directories, and `versionPattern` identifies supported version-layer names. `discoverVersionLayers` retains the original exact-or-cumulative selection API.
 
-### Traversal descriptors
+</details>
+
+<details>
+<summary><strong>Traversal descriptors</strong></summary>
 
 Consumers that apply exact and cumulative policies to different content can discover both sets once:
 
@@ -374,6 +381,8 @@ The helper is never published to either data repository. The `init`, `load`, and
 <summary><strong>Why the helper is outside public and private concerns</strong></summary>
 
 Public and private dispatchers may need identical version-selection behavior. Keeping one generated helper at `#/version-layers.js` avoids copying runtime code into both data repositories and prevents those copies from drifting. CI that checks out data directly must materialize the helper separately from the matching `gh-workspace-data` version.
+
+</details>
 
 </details>
 
