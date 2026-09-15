@@ -2,6 +2,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -67,5 +68,10 @@ test('load overwrites local changes with remote data', (context) => {
     const state = JSON.parse(fs.readFileSync(path.join(projectRoot, '#', '.data-state.json'), 'utf8'));
     assert.equal(state.version, 2);
     assert.equal(state.repositories.public.baseRevision, revision);
+    assert.equal(state.repositories.public.baseline.length, 1);
+    assert.equal(state.repositories.public.baseline[0].path, 'tests/data.txt');
+    assert.equal(state.repositories.public.baseline[0].sourcePath, `tests/${projectIdentity}/data.txt`);
+    assert.equal(state.repositories.public.baseline[0].digest,
+        `sha256:${crypto.createHash('sha256').update('remote\n').digest('hex')}`);
     assert.deepEqual(inspectWorkspaceStatus(projectIdentity).changes, []);
 });

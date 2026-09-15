@@ -9,7 +9,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const {
-    buildBaselineInventory,
     configureWorkspacePaths,
     readBaselineBytes
 } = require('../src/index.js');
@@ -204,29 +203,4 @@ test('rejects a baseline revision that is no longer loaded', (context) => {
         'b'.repeat(40),
         () => assert.fail('a stale baseline must not be fetched')
     ), /baseline revision is no longer loaded/);
-});
-
-// Build deterministic baseline metadata from exact Git blob bytes and project-relative paths.
-test('builds a baseline inventory from a selected Git revision', (context) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-baseline-'));
-    context.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    git(root, ['init', '-b', 'main']);
-    git(root, ['config', 'user.name', 'Test']);
-    git(root, ['config', 'user.email', 'test@example.invalid']);
-    const sourceRoot = path.join(root, 'tests', 'github.com', 'acme', 'widget');
-    fs.mkdirSync(sourceRoot, { recursive: true });
-    fs.writeFileSync(path.join(sourceRoot, 'fixture.json'), '{"ok":true}\n');
-    git(root, ['add', '-A', '--', '.']);
-    git(root, ['commit', '-m', 'Add baseline']);
-    const revision = git(root, ['rev-parse', 'HEAD']);
-    configureWorkspacePaths(root);
-
-    const inventory = buildBaselineInventory(root, revision, projectIdentity);
-
-    assert.equal(inventory.length, 1);
-    assert.equal(inventory[0].path, 'tests/fixture.json');
-    assert.equal(inventory[0].sourcePath, `tests/${projectIdentity}/fixture.json`);
-    assert.equal(inventory[0].digest, digest('{"ok":true}\n'));
-    assert.equal(inventory[0].size, 12);
-    assert.equal(inventory[0].mode, '100644');
 });

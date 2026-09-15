@@ -109,7 +109,12 @@ After merging manually, refreshing with `gh workspace-data load` is recommended 
 
 ## Read-only inspection protocol
 
-Editor integrations can inspect workspace changes without reproducing repository mapping, baseline selection, authentication, or Git logic. Protocol version 1 has two commands:
+Editor integrations can inspect workspace changes against the exact loaded baseline without reproducing repository mapping, authentication, or Git logic.
+
+<details>
+<summary><strong>Inspection protocol version 1 commands, response format, and state</strong></summary>
+
+Protocol version 1 has two commands:
 
 ```sh
 gh workspace-data status --json
@@ -159,6 +164,8 @@ For an added file, `baseline.available` is `false`; modified and deleted files h
 `show` writes the exact baseline bytes for one path to standard output. The visibility and concern-relative `--path` must identify an entry returned by the loaded baseline, and `--revision` must equal that visibility's reported `baselineRevision`; added files cannot be shown. The command retrieves the recorded Git blob through the authenticated GitHub CLI, verifies its size and SHA-256 digest against local state, and emits no bytes if the revision changed or verification fails. It never selects a newer commit. Consumers should treat the output as binary and include the reported baseline revision in any cached or virtual-document URI.
 
 Synchronization state version 2 records repository identity, the repository containing each baseline object, source path, Git blob ID, SHA-256 digest, size, and file mode. This generated inventory is the authority for inspection and is refreshed atomically with materialized data. Version 1 remains accepted by load and publish, but inspection reports `reloadRequired` until a successful load creates version 2 state.
+
+</details>
 
 ### VSCodium and VS Code integration
 
@@ -367,9 +374,9 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 
 ## Compatibility and verification
 
-Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, read-only status and baseline retrieval, baseline integrity checks, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
+Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, overwrite-style loading, read-only status and baseline retrieval, baseline integrity checks, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
 
-Run syntax validation and all 38 isolated tests with:
+Run syntax validation and all 37 isolated tests with:
 
 ```sh
 npm run check

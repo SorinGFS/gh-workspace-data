@@ -69,6 +69,7 @@ function run(executable, args, options = {}) {
         cwd: options.cwd || projectRoot,
         encoding,
         env: options.env || process.env,
+        input: options.input,
         maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
         windowsHide: true
     });
@@ -247,7 +248,7 @@ function cloneRepository(repository, destination) {
 
 // List every tracked object beneath a concern/project identity without exposing unrelated content.
 function listProjectEntries(repositoryPath, revision, projectIdentity) {
-    const result = git(repositoryPath, ['ls-tree', '-r', '-z', revision]);
+    const result = git(repositoryPath, ['ls-tree', '-r', '-l', '-z', revision]);
     const entries = [];
 
     // Parse NUL-delimited Git records so whitespace in data filenames remains unambiguous.
@@ -256,10 +257,10 @@ function listProjectEntries(repositoryPath, revision, projectIdentity) {
             continue;
         }
         const separator = record.indexOf('\t');
-        const metadata = record.slice(0, separator).split(' ');
+        const metadata = record.slice(0, separator).trim().split(/\s+/);
         const gitPath = record.slice(separator + 1);
         const firstSeparator = gitPath.indexOf('/');
-        if (separator < 0 || metadata.length !== 3) {
+        if (separator < 0 || metadata.length !== 4) {
             fail('Git returned an unsupported tree record.');
         }
         if (firstSeparator < 1) {
@@ -275,7 +276,8 @@ function listProjectEntries(repositoryPath, revision, projectIdentity) {
         validateConcern(concern);
         const relativePath = gitPath.slice(sourcePrefix.length + 1);
         resolveRelativePath(projectRoot, relativePath);
-        entries.push({ mode: metadata[0], type: metadata[1], object: metadata[2], gitPath, concern, relativePath });
+        const size = metadata[3] === '-' ? null : Number(metadata[3]);
+        entries.push({ mode: metadata[0], type: metadata[1], object: metadata[2], size, gitPath, concern, relativePath });
     }
     return entries;
 }
@@ -299,13 +301,74 @@ function digestBytes(bytes) {
     return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-// Record the immutable baseline objects needed for local status and lazy content retrieval.
-function buildBaselineInventory(repositoryPath, revision, projectIdentity) {
-    const inventory = listProjectEntries(repositoryPath, revision, projectIdentity).map((entry) => {
-        if (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) {
-            fail(`Unsupported Git object ${entry.type}/${entry.mode} at ${entry.gitPath}.`);
+// Read exact Git blobs in bounded batches instead of starting one process per baseline file.
+function readBaselineBlobs(repositoryPath, entries) {
+    const maximumBatchBytes = 32 * 1024 * 1024;
+    const blobs = new Map();
+    let batch = [];
+    let batchBytes = 0;
+
+    // Keep aggregate process output bounded while allowing one repository file to exceed the batch target.
+    function readBatch() {
+        if (batch.length === 0) {
+            return;
         }
-        const bytes = git(repositoryPath, ['cat-file', 'blob', entry.object], { encoding: null }).stdout;
+        const input = `${batch.map((entry) => entry.object).join('\n')}\n`;
+        const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0);
+        const output = git(repositoryPath, ['cat-file', '--batch'], {
+            encoding: null,
+            input,
+            maxBuffer: expectedBytes + batch.length * 256 + 1024
+        }).stdout;
+        let offset = 0;
+
+        // Parse each binary-safe header, exact payload length, and required batch separator.
+        for (const entry of batch) {
+            const headerEnd = output.indexOf(0x0a, offset);
+            if (headerEnd < 0) {
+                fail(`Git returned an incomplete baseline header for ${entry.gitPath}.`);
+            }
+            const [object, type, sizeText] = output.subarray(offset, headerEnd).toString('ascii').split(' ');
+            const size = Number(sizeText);
+            const contentStart = headerEnd + 1;
+            const contentEnd = contentStart + size;
+            if (object !== entry.object || type !== 'blob' || size !== entry.size
+                || contentEnd >= output.length || output[contentEnd] !== 0x0a) {
+                fail(`Git returned invalid baseline content for ${entry.gitPath}.`);
+            }
+            blobs.set(entry.object, output.subarray(contentStart, contentEnd));
+            offset = contentEnd + 1;
+        }
+        if (offset !== output.length) {
+            fail('Git returned unexpected trailing baseline content.');
+        }
+        batch = [];
+        batchBytes = 0;
+    }
+
+    // Partition entries using sizes reported by the selected revision's tree.
+    for (const entry of entries) {
+        if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+            fail(`Git returned an invalid blob size for ${entry.gitPath}.`);
+        }
+        if (batch.length > 0 && batchBytes + entry.size > maximumBatchBytes) {
+            readBatch();
+        }
+        batch.push(entry);
+        batchBytes += entry.size;
+    }
+    readBatch();
+    return blobs;
+}
+
+// Record immutable baseline metadata from exact Git object bytes.
+function buildBaselineInventory(repositoryPath, entries) {
+    const blobs = readBaselineBlobs(repositoryPath, entries);
+    const inventory = entries.map((entry) => {
+        const bytes = blobs.get(entry.object);
+        if (!bytes) {
+            fail(`Git did not return baseline content for ${entry.gitPath}.`);
+        }
         return {
             path: `${entry.concern}/${entry.relativePath}`,
             sourcePath: entry.gitPath,
@@ -493,7 +556,7 @@ function resolveLoadTarget(repositoryPath, repository, repositoryState, defaultR
 }
 
 // Copy the selected project subtrees from one Git revision into a visibility staging directory.
-function materializeVisibility(repositoryPath, revision, projectIdentity, destination) {
+function materializeVisibility(repositoryPath, revision, projectIdentity, destination, options = {}) {
     fs.mkdirSync(destination, { recursive: true });
     const entries = listProjectEntries(repositoryPath, revision, projectIdentity);
     const concerns = groupEntriesByConcern(entries);
@@ -512,6 +575,7 @@ function materializeVisibility(repositoryPath, revision, projectIdentity, destin
         fs.cpSync(source, target, { recursive: true, errorOnExist: true });
         inventoryOrdinaryFiles(target);
     }
+    return options.includeBaseline ? buildBaselineInventory(repositoryPath, entries) : null;
 }
 
 // Validate one version-two baseline inventory before trusting it for status or content retrieval.
@@ -880,8 +944,13 @@ function loadAll(projectIdentity, operations = {}) {
                 : null;
             const target = resolveLoadTarget(repositoryPath, repository, availableState, defaultRevision);
             git(repositoryPath, ['checkout', '--detach', '--force', target.revision]);
-            const baseline = buildBaselineInventory(repositoryPath, target.revision, projectIdentity);
-            materializeVisibility(repositoryPath, target.revision, projectIdentity, path.join(stagedRoot, visibility));
+            const baseline = materializeVisibility(
+                repositoryPath,
+                target.revision,
+                projectIdentity,
+                path.join(stagedRoot, visibility),
+                { includeBaseline: true }
+            );
             nextState.repositories[visibility] = {
                 availability: 'available',
                 repository,
@@ -1151,7 +1220,13 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
 
         const headRevision = git(repositoryPath, ['rev-parse', 'HEAD']).stdout.trim();
         const stagedRoot = path.join(temporaryRoot, 'materialized');
-        materializeVisibility(repositoryPath, 'HEAD', projectIdentity, path.join(stagedRoot, visibility));
+        const baseline = materializeVisibility(
+            repositoryPath,
+            'HEAD',
+            projectIdentity,
+            path.join(stagedRoot, visibility),
+            { includeBaseline: state.version === stateVersion }
+        );
         const nextRepositoryState = {
             availability: 'available',
             defaultBranch: metadata.default_branch,
@@ -1169,7 +1244,7 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
         if (state.version === stateVersion) {
             nextRepositoryState.repository = repository;
             nextRepositoryState.baselineRepository = pushRepository;
-            nextRepositoryState.baseline = buildBaselineInventory(repositoryPath, 'HEAD', projectIdentity);
+            nextRepositoryState.baseline = baseline;
         }
         state.repositories[visibility] = nextRepositoryState;
         replaceWorkspace(stagedRoot, state, [visibility]);
@@ -1358,7 +1433,6 @@ function execute() {
 }
 
 module.exports = {
-    buildBaselineInventory,
     completeOwnedPublicationCycle,
     configureWorkspacePaths,
     ensureRuntimeSupport,
