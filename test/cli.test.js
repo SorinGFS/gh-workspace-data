@@ -19,6 +19,8 @@ test('prints help outside a Git repository', () => {
   assert.match(result.stdout, /gh workspace-data <command>/);
   assert.match(result.stdout, /init/);
   assert.match(result.stdout, /load/);
+  assert.match(result.stdout, /status --json/);
+  assert.match(result.stdout, /show --protocol 1/);
   assert.match(result.stdout, /publish/);
   assert.match(result.stdout, /--merge-owned/);
   assert.match(result.stdout, /WORKSPACE_DATA_PUBLIC_REPOSITORY/);
@@ -29,7 +31,7 @@ test('rejects an unknown command', () => {
   const result = spawnSync(process.execPath, [executable, 'unknown'], { encoding: 'utf8' });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish \[--merge-owned\]>/);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|status --json\|show --protocol 1/);
 });
 
 // Accept the owned-merge option only on publish before establishing a target project.
@@ -51,7 +53,7 @@ test('rejects --merge-owned on load', () => {
   const result = spawnSync(process.execPath, [executable, 'load', '--merge-owned'], { encoding: 'utf8' });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|publish \[--merge-owned\]>/);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|status --json\|show --protocol 1/);
 });
 
 // Reserve only the generated namespace without changing the target project's command surface.

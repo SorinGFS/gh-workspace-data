@@ -107,6 +107,59 @@ After merging manually, refreshing with `gh workspace-data load` is recommended 
 
 </details>
 
+## Read-only inspection protocol
+
+Editor integrations can inspect workspace changes without reproducing repository mapping, baseline selection, authentication, or Git logic. Protocol version 1 has two commands:
+
+```sh
+gh workspace-data status --json
+gh workspace-data show --protocol 1 --visibility public --revision 0123456789abcdef0123456789abcdef01234567 --path tests/fixture.json
+```
+
+`status --json` is local-only: it does not contact GitHub, alter the workspace, refresh remotes, or compare with a newer remote revision. It compares ordinary files under `#/public` and `#/private` with the exact baselines recorded by the last successful `load` or `publish`. Its single-line JSON result has this shape:
+
+```json
+{
+  "protocolVersion": 1,
+  "projectIdentity": "github.com/acme/widget",
+  "state": "ready",
+  "repositories": {
+    "public": {
+      "availability": "available",
+      "baselineRevision": "0123456789abcdef0123456789abcdef01234567",
+      "pullRequest": null
+    },
+    "private": {
+      "availability": "missing",
+      "baselineRevision": null,
+      "pullRequest": null
+    }
+  },
+  "changes": [
+    {
+      "id": "public:tests/fixture.json",
+      "visibility": "public",
+      "status": "modified",
+      "path": "tests/fixture.json",
+      "workspacePath": "#/public/tests/fixture.json",
+      "baseline": { "available": true, "size": 128 }
+    }
+  ]
+}
+```
+
+`state` is one of:
+
+- `ready`: `changes` contains deterministic `added`, `modified`, and `deleted` entries.
+- `notInitialized`: no synchronization state exists; `repositories` and `changes` are empty.
+- `reloadRequired`: legacy state lacks the baseline inventory; run `gh workspace-data load` once to upgrade it.
+
+For an added file, `baseline.available` is `false`; modified and deleted files have a loaded baseline. Changes are ordered by public/private visibility and then portable data path. Unknown protocol arguments, malformed state, unsafe filesystem objects, and other inspection failures exit with status 1 and write the diagnostic to standard error. Valid status states exit with status 0.
+
+`show` writes the exact baseline bytes for one path to standard output. The visibility and concern-relative `--path` must identify an entry returned by the loaded baseline, and `--revision` must equal that visibility's reported `baselineRevision`; added files cannot be shown. The command retrieves the recorded Git blob through the authenticated GitHub CLI, verifies its size and SHA-256 digest against local state, and emits no bytes if the revision changed or verification fails. It never selects a newer commit. Consumers should treat the output as binary and include the reported baseline revision in any cached or virtual-document URI.
+
+Synchronization state version 2 records repository identity, the repository containing each baseline object, source path, Git blob ID, SHA-256 digest, size, and file mode. This generated inventory is the authority for inspection and is refreshed atomically with materialized data. Version 1 remains accepted by load and publish, but inspection reports `reloadRequired` until a successful load creates version 2 state.
+
 ## Repository selection
 
 The defaults contain no hardcoded user identity:
@@ -300,13 +353,13 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 - `#/` is generated workspace state and is excluded from the target Git repository.
 - Existing `.npmignore` files also exclude `/#/`; an absent `.npmignore` remains absent so npm continues using `.gitignore`.
 - Materialized components use ordinary files and directories, never filesystem links.
-- `#/.data-state.json` tracks source revisions and open pull requests; do not edit it manually.
+- `#/.data-state.json` tracks exact source repositories, revisions, baseline files, and open pull requests; do not edit it manually.
 - Root-level generated runtime support is excluded from public and private publication.
 - Losing synchronization state blocks publication rather than risking unintended remote deletion.
 
 ## Compatibility and verification
 
-Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
+Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, read-only status and baseline retrieval, baseline integrity checks, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
 
 Run syntax validation and all 30 isolated tests with:
 

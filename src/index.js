@@ -19,6 +19,9 @@ const protectedNames = new Set([
 ]);
 const runtimeSupportName = 'version-layers.js';
 const runtimeSupportSourcePath = path.join(__dirname, runtimeSupportName);
+const inspectionProtocolVersion = 1;
+const stateVersion = 2;
+const visibilities = ['public', 'private'];
 
 // Stop an unsafe or ambiguous synchronization path with a concise explanation.
 function fail(message) {
@@ -61,11 +64,12 @@ function ensureRuntimeSupport(root = namespaceRoot) {
 // Run an inspected local executor without invoking a shell or accepting unexpected exit states.
 function run(executable, args, options = {}) {
     const acceptedStatuses = options.acceptedStatuses || [0];
+    const encoding = Object.hasOwn(options, 'encoding') ? options.encoding : 'utf8';
     const result = spawnSync(executable, args, {
         cwd: options.cwd || projectRoot,
-        encoding: 'utf8',
+        encoding,
         env: options.env || process.env,
-        maxBuffer: 64 * 1024 * 1024,
+        maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
         windowsHide: true
     });
 
@@ -73,7 +77,8 @@ function run(executable, args, options = {}) {
         fail(`Unable to run ${executable}: ${result.error.message}`);
     }
     if (!acceptedStatuses.includes(result.status)) {
-        const detail = (result.stderr || result.stdout || '').trim();
+        const rawDetail = result.stderr?.length ? result.stderr : result.stdout;
+        const detail = Buffer.isBuffer(rawDetail) ? rawDetail.toString('utf8').trim() : (rawDetail || '').trim();
         fail(detail || `${executable} ${args.join(' ')} failed with status ${result.status}.`);
     }
     return result;
@@ -82,6 +87,13 @@ function run(executable, args, options = {}) {
 // Invoke Git against one explicit repository working directory.
 function git(repositoryPath, args, options = {}) {
     return run('git', ['-C', repositoryPath, ...args], options);
+}
+
+// Select the canonical project paths used by synchronization and inspection helpers.
+function configureWorkspacePaths(root) {
+    projectRoot = root;
+    namespaceRoot = path.join(projectRoot, '#');
+    statePath = path.join(namespaceRoot, '.data-state.json');
 }
 
 // Establish and enter the canonical project root before rotating generated workspace directories.
@@ -155,6 +167,18 @@ function isSafeSegment(segment) {
         && !protectedNames.has(segment.toLowerCase());
 }
 
+// Inspect a path object without following links while treating only absence as optional.
+function lstatIfPresent(targetPath) {
+    try {
+        return fs.lstatSync(targetPath);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return null;
+        }
+        throw error;
+    }
+}
+
 // Resolve a repository-relative Git path beneath a known ordinary directory boundary.
 function resolveRelativePath(root, relativePath) {
     const segments = relativePath.split('/');
@@ -177,6 +201,14 @@ function validateConcern(concern) {
 }
 
 // Derive conventional data repositories without embedding a tool publisher or user identity.
+function validateRepositoryIdentity(repository, label) {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+        fail(`Invalid ${label} repository identity: ${repository}`);
+    }
+    return repository;
+}
+
+// Derive conventional public and private repositories and validate explicit overrides.
 function deriveDataRepositories(projectIdentity, actor) {
     const identitySegments = projectIdentity.split('/');
     if (identitySegments[0] !== 'github.com' || identitySegments.length < 3) {
@@ -190,9 +222,7 @@ function deriveDataRepositories(projectIdentity, actor) {
 
     // Validate optional overrides through the same logical owner/repository contract as defaults.
     for (const [visibility, repository] of Object.entries(repositories)) {
-        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-            fail(`Invalid ${visibility} data repository identity: ${repository}`);
-        }
+        validateRepositoryIdentity(repository, `${visibility} data`);
     }
     return repositories;
 }
@@ -245,7 +275,7 @@ function listProjectEntries(repositoryPath, revision, projectIdentity) {
         validateConcern(concern);
         const relativePath = gitPath.slice(sourcePrefix.length + 1);
         resolveRelativePath(projectRoot, relativePath);
-        entries.push({ mode: metadata[0], type: metadata[1], gitPath, concern, relativePath });
+        entries.push({ mode: metadata[0], type: metadata[1], object: metadata[2], gitPath, concern, relativePath });
     }
     return entries;
 }
@@ -262,6 +292,31 @@ function groupEntriesByConcern(entries) {
         concerns.get(entry.concern).push(entry);
     }
     return concerns;
+}
+
+// Hash exact file bytes independently of a data repository's Git object format.
+function digestBytes(bytes) {
+    return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+// Record the immutable baseline objects needed for local status and lazy content retrieval.
+function buildBaselineInventory(repositoryPath, revision, projectIdentity) {
+    const inventory = listProjectEntries(repositoryPath, revision, projectIdentity).map((entry) => {
+        if (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode)) {
+            fail(`Unsupported Git object ${entry.type}/${entry.mode} at ${entry.gitPath}.`);
+        }
+        const bytes = git(repositoryPath, ['cat-file', 'blob', entry.object], { encoding: null }).stdout;
+        return {
+            path: `${entry.concern}/${entry.relativePath}`,
+            sourcePath: entry.gitPath,
+            object: entry.object,
+            digest: digestBytes(bytes),
+            size: bytes.length,
+            mode: entry.mode
+        };
+    });
+    inventory.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    return inventory;
 }
 
 // Inspect workspace content recursively and reject links, special objects, and protected names.
@@ -312,8 +367,8 @@ function ordinaryTreesEqual(leftRoot, rightRoot) {
 }
 
 // Discover local concerns from one complete visibility snapshot.
-function listWorkspaceConcerns(visibility) {
-    const visibilityRoot = path.join(namespaceRoot, visibility);
+function listWorkspaceConcerns(visibility, activeNamespaceRoot = namespaceRoot) {
+    const visibilityRoot = path.join(activeNamespaceRoot, visibility);
     if (!fs.existsSync(visibilityRoot)) {
         return [];
     }
@@ -481,22 +536,57 @@ function materializeVisibility(repositoryPath, revision, projectIdentity, destin
     }
 }
 
+// Validate one version-two baseline inventory before trusting it for status or content retrieval.
+function validateBaselineInventory(repositoryState, visibility, projectIdentity) {
+    if (!Array.isArray(repositoryState.baseline)) {
+        fail(`Synchronization state for ${visibility} data has no baseline inventory.`);
+    }
+    let previousPath;
+    for (const entry of repositoryState.baseline) {
+        if (!entry || typeof entry !== 'object' || typeof entry.path !== 'string'
+            || typeof entry.sourcePath !== 'string' || !/^[a-f0-9]{40,64}$/.test(entry.object || '')
+            || !/^sha256:[a-f0-9]{64}$/.test(entry.digest || '')
+            || !Number.isSafeInteger(entry.size) || entry.size < 0
+            || !['100644', '100755'].includes(entry.mode)) {
+            fail(`Synchronization state for ${visibility} data contains an invalid baseline entry.`);
+        }
+        resolveRelativePath(path.join(namespaceRoot, visibility), entry.path);
+        const [concern, ...relativeSegments] = entry.path.split('/');
+        const expectedSourcePath = `${concern}/${projectIdentity}/${relativeSegments.join('/')}`;
+        if (relativeSegments.length === 0 || entry.sourcePath !== expectedSourcePath) {
+            fail(`Synchronization state for ${visibility} data contains an invalid baseline path.`);
+        }
+        if (previousPath !== undefined && previousPath >= entry.path) {
+            fail(`Synchronization state for ${visibility} data has unordered or duplicate baseline paths.`);
+        }
+        previousPath = entry.path;
+    }
+}
+
 // Read synchronization state only when it matches the current project and complete visibility snapshots.
 function readState(projectIdentity, required = false) {
-    if (!fs.existsSync(statePath)) {
+    const namespaceStat = lstatIfPresent(namespaceRoot);
+    if (namespaceStat && (!namespaceStat.isDirectory() || namespaceStat.isSymbolicLink())) {
+        fail('The generated # namespace must be an ordinary directory.');
+    }
+    const stateStat = namespaceStat ? lstatIfPresent(statePath) : null;
+    if (!stateStat) {
         if (required) {
             fail('Synchronization state is missing; publication is blocked to prevent unintended deletion.');
         }
         return null;
     }
+    if (!stateStat.isFile() || stateStat.isSymbolicLink()) {
+        fail('Synchronization state must be an ordinary file.');
+    }
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    if (state.version !== 1 || state.projectIdentity !== projectIdentity || !state.repositories) {
+    if (![1, stateVersion].includes(state.version) || state.projectIdentity !== projectIdentity || !state.repositories) {
         fail('Synchronization state does not match this canonical project.');
     }
 
     // Validate both visibility baselines before allowing dependent synchronization work.
-    for (const visibility of Object.keys(dataRepositories)) {
+    for (const visibility of visibilities) {
         const repositoryState = state.repositories[visibility];
         if (!repositoryState || repositoryState.complete !== true) {
             fail(`Synchronization state for ${visibility} data is incomplete.`);
@@ -514,8 +604,141 @@ function readState(projectIdentity, required = false) {
         if (!['available', 'missing'].includes(repositoryState.availability)) {
             fail(`Synchronization state for ${visibility} data has unknown availability.`);
         }
+
+        if (state.version === stateVersion) {
+            validateRepositoryIdentity(repositoryState.repository, `${visibility} data`);
+            if (dataRepositories && repositoryState.repository !== dataRepositories[visibility]) {
+                fail(`Recorded ${visibility} data repository does not match the selected repository.`);
+            }
+            validateBaselineInventory(repositoryState, visibility, projectIdentity);
+            if (repositoryState.availability === 'available') {
+                validateRepositoryIdentity(repositoryState.baselineRepository, `${visibility} baseline`);
+            } else if (repositoryState.baselineRepository !== null || repositoryState.baseRevision
+                || repositoryState.baseline.length !== 0) {
+                fail(`Synchronization state for missing ${visibility} data has baseline content.`);
+            }
+        }
     }
     return state;
+}
+
+// Return the portable path accepted by inspection commands without permitting traversal.
+function validateInspectionPath(visibility, dataPath) {
+    if (!visibilities.includes(visibility)) {
+        fail(`Unsupported workspace-data visibility: ${visibility}`);
+    }
+    if (typeof dataPath !== 'string' || dataPath.includes('\\') || dataPath.startsWith('/')
+        || dataPath.endsWith('/') || dataPath.split('/').length < 2) {
+        fail(`Invalid workspace-data path: ${dataPath}`);
+    }
+    resolveRelativePath(path.join(namespaceRoot, visibility), dataPath);
+    return dataPath;
+}
+
+// Compare ordinary local files with the immutable baseline inventory without network access.
+function inspectWorkspaceStatus(projectIdentity) {
+    const state = readState(projectIdentity, false);
+    if (!state) {
+        return { protocolVersion: inspectionProtocolVersion, projectIdentity, state: 'notInitialized', repositories: {}, changes: [] };
+    }
+    verifyNamespaceShape(true);
+    if (state.version !== stateVersion) {
+        return { protocolVersion: inspectionProtocolVersion, projectIdentity, state: 'reloadRequired', repositories: {}, changes: [] };
+    }
+
+    const repositories = {};
+    const changes = [];
+    for (const visibility of visibilities) {
+        const repositoryState = state.repositories[visibility];
+        repositories[visibility] = {
+            availability: repositoryState.availability,
+            baselineRevision: repositoryState.baseRevision || null,
+            pullRequest: repositoryState.pullRequest || null
+        };
+        const baselineByPath = new Map(repositoryState.baseline.map((entry) => [entry.path, entry]));
+        const visibilityRoot = path.join(namespaceRoot, visibility);
+        const localFiles = inventoryOrdinaryFiles(visibilityRoot);
+        const localPaths = new Set(localFiles);
+
+        // Classify additions and byte or executable-mode changes in deterministic path order.
+        for (const dataPath of localFiles) {
+            const baseline = baselineByPath.get(dataPath);
+            const workspaceFile = resolveRelativePath(visibilityRoot, dataPath);
+            if (!baseline) {
+                changes.push({
+                    id: `${visibility}:${dataPath}`,
+                    visibility,
+                    status: 'added',
+                    path: dataPath,
+                    workspacePath: `#/${visibility}/${dataPath}`,
+                    baseline: { available: false }
+                });
+                continue;
+            }
+            const stat = fs.lstatSync(workspaceFile);
+            const bytes = fs.readFileSync(workspaceFile);
+            const modeChanged = process.platform !== 'win32'
+                && ((stat.mode & 0o111) !== 0 ? '100755' : '100644') !== baseline.mode;
+            if (bytes.length !== baseline.size || digestBytes(bytes) !== baseline.digest || modeChanged) {
+                changes.push({
+                    id: `${visibility}:${dataPath}`,
+                    visibility,
+                    status: 'modified',
+                    path: dataPath,
+                    workspacePath: `#/${visibility}/${dataPath}`,
+                    baseline: { available: true, size: baseline.size }
+                });
+            }
+        }
+
+        // Classify baseline files absent from the complete local visibility snapshot as deletions.
+        for (const baseline of repositoryState.baseline) {
+            if (!localPaths.has(baseline.path)) {
+                changes.push({
+                    id: `${visibility}:${baseline.path}`,
+                    visibility,
+                    status: 'deleted',
+                    path: baseline.path,
+                    workspacePath: `#/${visibility}/${baseline.path}`,
+                    baseline: { available: true, size: baseline.size }
+                });
+            }
+        }
+    }
+
+    changes.sort((left, right) => visibilities.indexOf(left.visibility) - visibilities.indexOf(right.visibility)
+        || (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+    return { protocolVersion: inspectionProtocolVersion, projectIdentity, state: 'ready', repositories, changes };
+}
+
+// Retrieve and verify one immutable baseline blob selected only through recorded state.
+function readBaselineBytes(projectIdentity, visibility, dataPath, expectedRevision, fetchBlob = (repository, object) => {
+    const endpoint = `repos/${repository}/git/blobs/${object}`;
+    return run('gh', ['api', endpoint, '-H', 'Accept: application/vnd.github.raw+json'], {
+        encoding: null,
+        maxBuffer: 101 * 1024 * 1024
+    }).stdout;
+}) {
+    const state = readState(projectIdentity, true);
+    if (state.version !== stateVersion) {
+        fail('Synchronization state requires a successful load before baseline content is available.');
+    }
+    verifyNamespaceShape(true);
+    const validatedPath = validateInspectionPath(visibility, dataPath);
+    const repositoryState = state.repositories[visibility];
+    if (!/^[a-f0-9]{40,64}$/.test(expectedRevision || '') || repositoryState.baseRevision !== expectedRevision) {
+        fail(`The requested ${visibility} baseline revision is no longer loaded.`);
+    }
+    const baseline = repositoryState.baseline.find((entry) => entry.path === validatedPath);
+    if (!baseline || repositoryState.availability !== 'available') {
+        fail(`No loaded baseline exists for #/${visibility}/${validatedPath}.`);
+    }
+
+    const bytes = fetchBlob(repositoryState.baselineRepository, baseline.object);
+    if (!Buffer.isBuffer(bytes) || bytes.length !== baseline.size || digestBytes(bytes) !== baseline.digest) {
+        fail(`Baseline content verification failed for #/${visibility}/${validatedPath}.`);
+    }
+    return bytes;
 }
 
 // Reject unknown # content because it cannot be assigned deterministic synchronization semantics.
@@ -645,7 +868,7 @@ function loadAll(projectIdentity, actor) {
     verifyNamespaceShape(Boolean(previousState));
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-data-load-'));
     const stagedRoot = path.join(temporaryRoot, 'materialized');
-    const nextState = { version: 1, projectIdentity, repositories: {} };
+    const nextState = { version: stateVersion, projectIdentity, repositories: {} };
 
     try {
         // Reconcile each visibility independently while committing both snapshots together locally.
@@ -659,6 +882,9 @@ function loadAll(projectIdentity, actor) {
                 stageUnavailableVisibility(visibility, path.join(stagedRoot, visibility));
                 nextState.repositories[visibility] = {
                     availability: 'missing',
+                    repository,
+                    baselineRepository: null,
+                    baseline: [],
                     complete: true,
                     pullRequest: null
                 };
@@ -697,12 +923,16 @@ function loadAll(projectIdentity, actor) {
                 );
             }
 
+            const baseline = buildBaselineInventory(repositoryPath, target.revision, projectIdentity);
             applyWorkspacePatch(repositoryPath, target.revision, patchRevision, visibility, actor);
             materializeVisibility(repositoryPath, 'HEAD', projectIdentity, path.join(stagedRoot, visibility));
             nextState.repositories[visibility] = {
                 availability: 'available',
+                repository,
+                baselineRepository: target.pullRequest?.headRepository || repository,
                 defaultBranch: metadata.default_branch,
                 baseRevision: target.revision,
+                baseline,
                 complete: true,
                 pullRequest: target.pullRequest
             };
@@ -966,7 +1196,7 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
         const headRevision = git(repositoryPath, ['rev-parse', 'HEAD']).stdout.trim();
         const stagedRoot = path.join(temporaryRoot, 'materialized');
         materializeVisibility(repositoryPath, 'HEAD', projectIdentity, path.join(stagedRoot, visibility));
-        state.repositories[visibility] = {
+        const nextRepositoryState = {
             availability: 'available',
             defaultBranch: metadata.default_branch,
             baseRevision: headRevision,
@@ -980,6 +1210,12 @@ function publishVisibility(state, visibility, projectIdentity, actor) {
                 status: 'open'
             }
         };
+        if (state.version === stateVersion) {
+            nextRepositoryState.repository = repository;
+            nextRepositoryState.baselineRepository = pushRepository;
+            nextRepositoryState.baseline = buildBaselineInventory(repositoryPath, 'HEAD', projectIdentity);
+        }
+        state.repositories[visibility] = nextRepositoryState;
         replaceWorkspace(stagedRoot, state, [visibility]);
         console.log(`Published ${visibility} changes for review: ${pullRequest.url}`);
         return {
@@ -1026,6 +1262,8 @@ function printHelp() {
 Commands:
   init                    Reserve the generated # workspace namespace
   load                    Load or reconcile all matched public and private concerns
+  status --json           Inspect local changes against the loaded baseline using protocol v1
+  show --protocol 1       Emit one revision-matched loaded baseline file as verified raw bytes
   publish                 Publish all workspace changes through contribution branches and PRs
   publish --merge-owned   Merge actor-owned PRs and reload after successful immediate merges
 
@@ -1079,7 +1317,30 @@ function initializeProject() {
     console.log(`Private source: ${dataRepositories.private}`);
 }
 
-// Route complete-data actions without concern-level maintenance arguments.
+// Parse the raw-content command without allowing duplicate, unknown, or ambiguous options.
+function parseShowArguments(args) {
+    const options = {};
+    for (let index = 0; index < args.length; index += 2) {
+        const name = args[index];
+        const value = args[index + 1];
+        if (!['--protocol', '--visibility', '--revision', '--path'].includes(name) || value === undefined || Object.hasOwn(options, name)) {
+            fail('Usage: gh workspace-data show --protocol 1 --visibility <public|private> --revision <commit> --path <concern/path>');
+        }
+        options[name] = value;
+    }
+    if (options['--protocol'] !== String(inspectionProtocolVersion)
+        || !options['--visibility'] || !options['--revision'] || !options['--path']
+        || Object.keys(options).length !== 4) {
+        fail('Usage: gh workspace-data show --protocol 1 --visibility <public|private> --revision <commit> --path <concern/path>');
+    }
+    return {
+        visibility: options['--visibility'],
+        revision: options['--revision'],
+        dataPath: options['--path']
+    };
+}
+
+// Route mutating actions and the versioned read-only inspection protocol.
 function main() {
     const [command, ...extraArguments] = process.argv.slice(2);
     if (['help', '--help', '-h'].includes(command) && extraArguments.length === 0) {
@@ -1089,22 +1350,33 @@ function main() {
     const mergeOwned = command === 'publish'
         && extraArguments.length === 1
         && extraArguments[0] === '--merge-owned';
-    if (!['init', 'load', 'publish'].includes(command)
-        || (extraArguments.length > 0 && !mergeOwned)) {
-        fail('Usage: gh workspace-data <init|load|publish [--merge-owned]>');
+    const status = command === 'status' && extraArguments.length === 1 && extraArguments[0] === '--json';
+    const show = command === 'show' ? parseShowArguments(extraArguments) : null;
+    if (!status && !show && (!['init', 'load', 'publish'].includes(command)
+        || (extraArguments.length > 0 && !mergeOwned))) {
+        fail('Usage: gh workspace-data <init|load|status --json|show --protocol 1 --visibility <public|private> --revision <commit> --path <concern/path>|publish [--merge-owned]>');
     }
 
-    projectRoot = establishProjectRoot();
-    namespaceRoot = path.join(projectRoot, '#');
-    statePath = path.join(namespaceRoot, '.data-state.json');
+    configureWorkspacePaths(establishProjectRoot());
     const projectIdentity = deriveProjectIdentity();
+
+    // Keep inspection commands read-only and independent of actor lookup or live remote state.
+    if (status) {
+        process.stdout.write(`${JSON.stringify(inspectWorkspaceStatus(projectIdentity))}\n`);
+        return;
+    }
+    if (show) {
+        process.stdout.write(readBaselineBytes(projectIdentity, show.visibility, show.dataPath, show.revision));
+        return;
+    }
+
     const actor = ghApi('user').login;
     if (!actor || !/^[A-Za-z0-9-]+$/.test(actor)) {
         fail('The authenticated GitHub contributor identity is unavailable.');
     }
     dataRepositories = deriveDataRepositories(projectIdentity, actor);
 
-    // Keep shared public/private runtime support synchronized for every initialized command.
+    // Keep shared public/private runtime support synchronized for every initialized mutating command.
     ensureRuntimeSupport();
 
     if (command === 'init') {
@@ -1130,13 +1402,17 @@ function execute() {
 }
 
 module.exports = {
+    buildBaselineInventory,
     completeOwnedPublicationCycle,
+    configureWorkspacePaths,
     ensureRuntimeSupport,
     establishProjectRoot,
     execute,
     ensureIgnorePolicy,
+    inspectWorkspaceStatus,
     mergeOwnedPublications,
     preparePublicationBranch,
+    readBaselineBytes,
     replaceWorkspace,
     verifyNamespaceShape
 };
