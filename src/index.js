@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { version: packageVersion } = require('../package.json');
 
 let projectRoot = path.resolve(process.cwd());
 let namespaceRoot;
@@ -1293,6 +1294,7 @@ function printHelp() {
 Commands:
   init                    Reserve the generated # workspace namespace
   load                    Replace matched public and private concerns from remote data
+  capabilities --json     Report the installed command and protocol capabilities
   status --json           Inspect local changes against the loaded baseline using protocol v1
   show --protocol 1       Emit one revision-matched loaded baseline file as verified raw bytes
   publish                 Publish all workspace changes through contribution branches and PRs
@@ -1381,11 +1383,25 @@ function main() {
     const mergeOwned = command === 'publish'
         && extraArguments.length === 1
         && extraArguments[0] === '--merge-owned';
+    const capabilities = command === 'capabilities'
+        && extraArguments.length === 1
+        && extraArguments[0] === '--json';
     const status = command === 'status' && extraArguments.length === 1 && extraArguments[0] === '--json';
     const show = command === 'show' ? parseShowArguments(extraArguments) : null;
-    if (!status && !show && (!['init', 'load', 'publish'].includes(command)
+    if (!capabilities && !status && !show && (!['init', 'load', 'publish'].includes(command)
         || (extraArguments.length > 0 && !mergeOwned))) {
-        fail('Usage: gh workspace-data <init|load|status --json|show --protocol 1 --visibility <public|private> --revision <commit> --path <concern/path>|publish [--merge-owned]>');
+        fail('Usage: gh workspace-data <init|load|capabilities --json|status --json|show --protocol 1 --visibility <public|private> --revision <commit> --path <concern/path>|publish [--merge-owned]>');
+    }
+
+    // Report compatibility without requiring a project, authentication, or network access.
+    if (capabilities) {
+        process.stdout.write(`${JSON.stringify({
+            command: 'gh workspace-data',
+            version: packageVersion,
+            inspectionProtocolVersions: [inspectionProtocolVersion],
+            loadBehavior: 'replace'
+        })}\n`);
+        return;
     }
 
     configureWorkspacePaths(establishProjectRoot());

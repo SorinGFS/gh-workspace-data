@@ -19,6 +19,7 @@ test('prints help outside a Git repository', () => {
   assert.match(result.stdout, /gh workspace-data <command>/);
   assert.match(result.stdout, /init/);
   assert.match(result.stdout, /load/);
+  assert.match(result.stdout, /capabilities --json/);
   assert.match(result.stdout, /status --json/);
   assert.match(result.stdout, /show --protocol 1/);
   assert.match(result.stdout, /publish/);
@@ -31,7 +32,20 @@ test('rejects an unknown command', () => {
   const result = spawnSync(process.execPath, [executable, 'unknown'], { encoding: 'utf8' });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|status --json\|show --protocol 1/);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|capabilities --json\|status --json/);
+});
+
+// Report machine-readable installation capabilities without a project or authentication.
+test('reports installed capabilities outside a Git repository', () => {
+  const result = spawnSync(process.execPath, [executable, 'capabilities', '--json'], { encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    command: 'gh workspace-data',
+    version: '0.7.2',
+    inspectionProtocolVersions: [1],
+    loadBehavior: 'replace'
+  });
 });
 
 // Accept the owned-merge option only on publish before establishing a target project.
@@ -53,7 +67,7 @@ test('rejects --merge-owned on load', () => {
   const result = spawnSync(process.execPath, [executable, 'load', '--merge-owned'], { encoding: 'utf8' });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|status --json\|show --protocol 1/);
+  assert.match(result.stderr, /Usage: gh workspace-data <init\|load\|capabilities --json\|status --json/);
 });
 
 // Reserve only the generated namespace without changing the target project's command surface.

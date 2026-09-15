@@ -114,12 +114,26 @@ Editor integrations can inspect workspace changes against the exact loaded basel
 <details>
 <summary><strong>Inspection protocol version 1 commands, response format, and state</strong></summary>
 
-Protocol version 1 has two commands:
+The read-only capability and inspection commands are:
 
 ```sh
+gh workspace-data capabilities --json
 gh workspace-data status --json
 gh workspace-data show --protocol 1 --visibility public --revision 0123456789abcdef0123456789abcdef01234567 --path tests/fixture.json
 ```
+
+`capabilities --json` reports the installed package version, supported inspection protocol versions, and Load behavior without requiring a project, authentication, or network access:
+
+```json
+{
+  "command": "gh workspace-data",
+  "version": "0.7.2",
+  "inspectionProtocolVersions": [1],
+  "loadBehavior": "replace"
+}
+```
+
+Integrations should determine compatibility from the reported protocol and behavior fields rather than from the informational package version. A command that is missing or does not report the required capabilities is incompatible with that integration.
 
 `status --json` is local-only: it does not contact GitHub, alter the workspace, refresh remotes, or compare with a newer remote revision. It compares ordinary files under `#/public` and `#/private` with the exact baselines recorded by the last successful `load` or `publish`. Its single-line JSON result has this shape:
 
@@ -169,7 +183,7 @@ Synchronization state version 2 records repository identity, the repository cont
 
 ### VSCodium and VS Code integration
 
-The companion [Workspace Data extension](https://github.com/SorinGFS/codium-workspace-data) consumes this protocol and presents public and private changes through the editor's native Source Control and diff interfaces. It delegates repository mapping, authentication, baseline retrieval, loading, and publication back to `gh-workspace-data`; it does not create another Git repository under `#/` or compare with a newer remote revision.
+The companion [Workspace Data extension](https://github.com/SorinGFS/codium-workspace-data) consumes this protocol and presents public and private changes through the editor's native Source Control and diff interfaces. It checks `capabilities --json` on activation and offers an explicit install-or-upgrade action when this prerequisite is missing or incompatible. Before Load or publication, it checks the active GitHub CLI authentication and links to authentication setup when needed. Repository mapping, credentials, baseline retrieval, loading, and publication remain owned by GitHub CLI and `gh-workspace-data`; the editor extension does not create another Git repository under `#/` or compare with a newer remote revision.
 
 Install the VSIX from the companion extension's [latest GitHub release](https://github.com/SorinGFS/codium-workspace-data/releases/latest), reload the editor window, and open the Source Control view. If the repository selector is hidden, reveal the **Repositories** view and select **Workspace Data**. The provider intentionally has no commit input because **Workspace Data: Publish** publishes through pull requests rather than Git commits. Its Load action checks current status and requests confirmation before overwriting unpublished changes.
 
@@ -204,7 +218,7 @@ Use the same overrides for subsequent `load` and `publish` operations.
 
 ## Versioned data folders
 
-Optionally, the stored data can be organized into versioned layers. When initialized on a repository, the extension provides the `#/version-layers.js` helper that can be used to discover the stored version layers and its output can be used in consumer scripts.
+Optionally, stored data can be organized into versioned layers. When a project is initialized, the extension provides the `#/version-layers.js` helper. Consumer scripts can use its output to select stored version layers.
 
 A concern can keep all data at its root, divide it into semantic-version folders, or combine both:
 
@@ -354,7 +368,7 @@ It preserves supplied layer order, then sorts collections and files numerically.
 
 It preserves supplied layer order and sorts concerns lexically. It returns descriptors without loading entry points, leaving configuration, package API injection, assertions, and execution under consumer control.
 
-The helper is never published to either data repository. Every initialized command restores its canonical installed bytes before synchronization, so it should not be edited manually.
+The helper is never published to either data repository. The `init`, `load`, and `publish` commands restore its canonical installed bytes before continuing, so it should not be edited manually.
 
 <details>
 <summary><strong>Why the helper is outside public and private concerns</strong></summary>
@@ -367,7 +381,7 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 
 - `#/` is generated workspace state and is excluded from the target Git repository.
 - Existing `.npmignore` files also exclude `/#/`; an absent `.npmignore` remains absent so npm continues using `.gitignore`.
-- Materialized components use ordinary files and directories, never filesystem links.
+- The extension materializes only ordinary files and directories and rejects filesystem links encountered in workspace data.
 - `#/.data-state.json` tracks exact source repositories, revisions, baseline files, and open pull requests; do not edit it manually.
 - Root-level generated runtime support is excluded from public and private publication.
 - Losing synchronization state blocks publication rather than risking unintended remote deletion.
@@ -376,7 +390,7 @@ Public and private dispatchers may need identical version-selection behavior. Ke
 
 Automated tests cover Windows, macOS, and Linux on Node.js 20, 22, and 24. The matrix exercises the CLI entry point, overwrite-style loading, read-only status and baseline retrieval, baseline integrity checks, ignore-policy handling, generated runtime support, exact and backwards-compatible version ordering, owned-pull-request merge qualification, deferred reload behavior, publication history, workspace replacement, and rollback.
 
-Run syntax validation and all 37 isolated tests with:
+Run syntax validation and all 38 isolated tests with:
 
 ```sh
 npm run check

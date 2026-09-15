@@ -1,6 +1,6 @@
 {
   "name": "gh-workspace-data",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Materialize and publish project-associated workspace data through GitHub CLI",
   "license": "MIT",
   "repository": {
